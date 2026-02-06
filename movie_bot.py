@@ -1,6 +1,15 @@
 import json, os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import sys
+
+lock_file = "bot.lock"
+
+if os.path.exists(lock_file):
+    print("Bot already running!")
+    sys.exit()
+
+open(lock_file,"w").close()
 
 # ===== CONFIG =====
 
