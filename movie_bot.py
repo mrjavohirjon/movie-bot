@@ -51,6 +51,15 @@ def join_btn():
         [InlineKeyboardButton("✅ Check", callback_data="check")]
     ])
 
+#=======SEND WITH NAME=======#
+
+async def send_welcome(client, msg):
+    name = msg.from_user.first_name or "Do'stim"
+    await msg.reply(
+        f"👋 Assalomu alaykum {name} 🐾 botimizga xush kelibsiz.\n\n"
+        "✍🏻 Kino kodini yuboring."
+    )
+
 #=======JOIN FORCE=====#
 
 async def force_join(client, msg):
@@ -102,25 +111,29 @@ async def start(client, msg):
         upsert=True
     )
 
-    if msg.from_user.id in ADMIN_IDS:
-        await msg.reply(
-            "⭐ Admin Panel\n\n🎬 Send movie code or name to search",
-            reply_markup=admin_menu()
-        )
-    else:
-        await msg.reply(
-            "🎬 Send movie code or name to search",
-            reply_markup=user_menu()
-        )
+    await send_welcome(client, msg)
+
+    await msg.reply(
+        "🎬 Send movie code or name to search",
+        reply_markup=user_menu()
+    )
+
 
 
 @app.on_callback_query(filters.regex("check"))
-async def check(client,cb):
-    if await joined(client,cb.from_user.id):
+async def check(client, cb):
+
+    if await joined(client, cb.from_user.id):
         await cb.message.delete()
-        await client.send_message(cb.from_user.id,"✅ Access granted!")
+
+        fake_msg = cb.message
+        fake_msg.from_user = cb.from_user
+
+        await send_welcome(client, fake_msg)
+
     else:
-        await cb.answer("❌ Join channel first!",show_alert=True)
+        await cb.answer("❌ Join channel first!", show_alert=True)
+
 
 # ===== SAVE MOVIE =====
 
