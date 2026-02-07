@@ -2,8 +2,18 @@ import json, os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sys
+from pymongo import MongoClient
 
-lock_file = "bot.lock"
+MONGO_URL = "mongodb+srv://Mr_Javohirjon:ATQmOjn0TCdyKtTM@cluster0.qhsdrm8.mongodb.net/moviebot"
+
+mongo = MongoClient(MONGO_URL)
+db = mongo.moviebot
+
+movies_col = db.movies
+users_col = db.users
+fav_col = db.favorites
+req_col = db.requests
+
 
 if os.path.exists(lock_file):
     print("Bot already running!")
@@ -22,10 +32,6 @@ MANDATORY_CHANNEL = "@TG_Manager_uz"
 
 ADMIN_IDS = [5014031582]
 
-MOVIES_FILE = "movies.json"
-REQUEST_FILE = "requests.json"
-USERS_FILE = "users.json"
-FAV_FILE = "favorites.json"
 
 # ==================
 
@@ -33,14 +39,6 @@ app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== INIT FILES =====
 
-def init(file, default):
-    if not os.path.exists(file):
-        json.dump(default, open(file,"w"))
-
-init(MOVIES_FILE, [])
-init(REQUEST_FILE, [])
-init(USERS_FILE, [])
-init(FAV_FILE, {})
 
 def load(f):
     try:
@@ -117,22 +115,20 @@ async def check(client,cb):
 # ===== SAVE MOVIE =====
 
 @app.on_message(filters.video & filters.chat(MOVIE_CHANNEL))
-async def save_movie(client,msg):
+async def save_movie(client, msg):
 
-    movies = load(MOVIES_FILE)
-    code = 1 if not movies else movies[-1]["code"] + 1
+    last = movies_col.find_one(sort=[("code", -1)])
+    code = 1 if not last else last["code"] + 1
 
     title = msg.caption or f"Movie {code}"
 
-    movies.append({
-        "code":code,
-        "file_id":msg.video.file_id,
-        "title":title,
-        "downloads":0,
-        "msg_id":msg.id
+    movies_col.insert_one({
+        "code": code,
+        "file_id": msg.video.file_id,
+        "title": title,
+        "downloads": 0,
+        "msg_id": msg.id
     })
-
-    save(MOVIES_FILE,movies)
 
     await msg.reply(
         f"✅ Saved!\n🎬 Code: {code}",
@@ -297,7 +293,7 @@ async def top(client, cb):
     text = "📈 Top Movies:\n\n"
 
     for i, m in enumerate(top, 1):
-        title = m["title"].splitlines()[0]   # only first line
+        title = m["title"].splitlines()[1]   # only first line
         text += f"{i}. {title} (Code: {m['code']})\n"
 
     await cb.message.edit_text(
