@@ -109,6 +109,35 @@ async def save_movie(client, msg):
 
     await msg.reply(f"✅ Movie saved\n🎬 Code: {code}")
 
+# ================= REMOVE MOVIE =================
+
+@app.on_callback_query(filters.regex("^remove_"))
+async def remove_movie(client, cb):
+
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Not allowed", show_alert=True)
+        return
+
+    code = int(cb.data.split("_")[1])
+
+    movie = movies_col.find_one({"code": code})
+    if not movie:
+        await cb.answer("Movie already removed", show_alert=True)
+        return
+
+    # delete from channel
+    try:
+        await client.delete_messages(MOVIE_CHANNEL, movie["msg_id"])
+    except:
+        pass
+
+    # delete from database
+    movies_col.delete_one({"code": code})
+
+    await cb.message.edit_text("🗑 Movie removed successfully")
+
+
+
 # ================= SEARCH =================
 
 @app.on_message(filters.text & ~filters.regex("^/"))
