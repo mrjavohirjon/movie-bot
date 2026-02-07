@@ -1,10 +1,9 @@
+import json, os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 
-# ================= MONGODB =================
-
-MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/moviebot"
+MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 mongo = MongoClient(MONGO_URL)
 db = mongo.moviebot
@@ -14,7 +13,8 @@ users_col = db.users
 fav_col = db.favorites
 req_col = db.requests
 
-# ================= CONFIG =================
+
+# ===== CONFIG =====
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
@@ -22,16 +22,32 @@ BOT_TOKEN = "8509897503:AAE54so0a3oUImP9psT_-3IpETGCogo_c-A"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
+
 ADMIN_IDS = [5014031582]
+
+
+# ==================
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ================= JOIN CHECK =================
+# ===== INIT FILES =====
+
+
+def load(f):
+    try:
+        return json.load(open(f))
+    except:
+        return {} if f==FAV_FILE else []
+
+def save(f,d):
+    json.dump(d, open(f,"w"), indent=4)
+
+# ===== JOIN CHECK =====
 
 async def joined(client, uid):
     try:
         m = await client.get_chat_member(MANDATORY_CHANNEL, uid)
-        return m.status not in ("left", "kicked")
+        return m.status not in ["left","kicked"]
     except:
         return False
 
@@ -41,7 +57,7 @@ def join_btn():
         [InlineKeyboardButton("✅ Check", callback_data="check")]
     ])
 
-# ================= MENUS =================
+# ===== MENUS =====
 
 def user_menu(admin=False):
     btn = [
@@ -58,14 +74,16 @@ def admin_menu():
         [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
         [InlineKeyboardButton("📈 Top Movies", callback_data="top")],
         [InlineKeyboardButton("📥 Requests", callback_data="view_requests")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")],
         [InlineKeyboardButton("⬅ Back", callback_data="back")]
     ])
 
-# ================= START =================
+# ===== START =====
 
 @app.on_message(filters.command("start"))
 async def start(client, msg):
 
+    # save user to MongoDB if not exists
     users_col.update_one(
         {"user_id": msg.from_user.id},
         {"$setOnInsert": {"user_id": msg.from_user.id}},
@@ -81,15 +99,15 @@ async def start(client, msg):
         reply_markup=user_menu(msg.from_user.id in ADMIN_IDS)
     )
 
-@app.on_callback_query(filters.regex("^check$"))
-async def check_join(client, cb):
-    if await joined(client, cb.from_user.id):
+@app.on_callback_query(filters.regex("check"))
+async def check(client,cb):
+    if await joined(client,cb.from_user.id):
         await cb.message.delete()
-        await client.send_message(cb.from_user.id, "✅ Access granted!")
+        await client.send_message(cb.from_user.id,"✅ Access granted!")
     else:
-        await cb.answer("❌ Join channel first!", show_alert=True)
+        await cb.answer("❌ Join channel first!",show_alert=True)
 
-# ================= SAVE MOVIE =================
+# ===== SAVE MOVIE =====
 
 @app.on_message(filters.video & filters.chat(MOVIE_CHANNEL))
 async def save_movie(client, msg):
@@ -97,48 +115,80 @@ async def save_movie(client, msg):
     last = movies_col.find_one(sort=[("code", -1)])
     code = 1 if not last else last["code"] + 1
 
-    title = (msg.caption or f"Movie {code}").strip()
+    title = msg.caption or f"Movie {code}"
 
     movies_col.insert_one({
         "code": code,
-        "title": title,
         "file_id": msg.video.file_id,
-        "msg_id": msg.id,
-        "downloads": 0
+        "title": title,
+        "downloads": 0,
+        "msg_id": msg.id
     })
 
-    await msg.reply(f"✅ Movie saved\n🎬 Code: {code}")
+    await msg.reply(
+        f"✅ Saved!\n🎬 Code: {code}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Remove Movie", callback_data=f"remove_{code}")]
+        ])
+    )
 
-# ================= REMOVE MOVIE =================
+# ===== REMOVE =====
 
 @app.on_callback_query(filters.regex("^remove_"))
-async def remove_movie(client, cb):
+async def remove_movie(client,cb):
 
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Not allowed", show_alert=True)
-        return
+    code=int(cb.data.split("_")[1])
+    movies=load(MOVIES_FILE)
 
-    code = int(cb.data.split("_")[1])
-
-    movie = movies_col.find_one({"code": code})
+    movie = next((m for m in movies if m["code"]==code),None)
     if not movie:
-        await cb.answer("Movie already removed", show_alert=True)
+        await cb.answer("Already removed",show_alert=True)
         return
 
-    # delete from channel
     try:
         await client.delete_messages(MOVIE_CHANNEL, movie["msg_id"])
     except:
         pass
 
-    # delete from database
-    movies_col.delete_one({"code": code})
+    movies=[m for m in movies if m["code"]!=code]
+    save(MOVIES_FILE,movies)
 
-    await cb.message.edit_text("🗑 Movie removed successfully")
+    await cb.message.edit_text("🗑 Movie removed")
 
+# ===== BROADCAST =====
 
+broadcast_wait=set()
 
-# ================= SEARCH =================
+@app.on_callback_query(filters.regex("broadcast"))
+async def ask_broadcast(client,cb):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    broadcast_wait.add(cb.from_user.id)
+    await cb.message.edit_text("📢 Send text/image/video/file to broadcast (or /cancel)")
+
+@app.on_message(filters.user(ADMIN_IDS))
+async def handle_broadcast(client,msg):
+
+    if msg.from_user.id not in broadcast_wait:
+        return
+
+    if msg.text and msg.text.lower()=="/cancel":
+        broadcast_wait.remove(msg.from_user.id)
+        await msg.reply("❌ Broadcast cancelled")
+        return
+
+    users = load(USERS_FILE)
+
+    for u in users:
+        try:
+            await msg.copy(u)
+        except:
+            pass
+
+    broadcast_wait.remove(msg.from_user.id)
+    await msg.reply("✅ Broadcast sent!")
+
+# ===== SEARCH =====
 
 @app.on_message(filters.text & ~filters.regex("^/"))
 async def search(client, msg):
@@ -146,15 +196,16 @@ async def search(client, msg):
     if not await joined(client, msg.from_user.id):
         return
 
-    q = msg.text.strip().lower()
+    q = msg.text.lower().strip()
 
-    movie = movies_col.find_one(
-        {"code": int(q)} if q.isdigit()
-        else {"title": {"$regex": q, "$options": "i"}}
-    )
+    movie = None
+    if q.isdigit():
+        movie = movies_col.find_one({"code": int(q)})
+    else:
+        movie = movies_col.find_one({"title": {"$regex": q, "$options": "i"}})
 
     if not movie:
-        return
+        return  # ⛔ prevents spam / loops
 
     await client.send_video(
         msg.chat.id,
@@ -170,77 +221,131 @@ async def search(client, msg):
         {"$inc": {"downloads": 1}}
     )
 
-# ================= FAVORITES =================
+# ===== FAVORITES =====
 
 @app.on_callback_query(filters.regex("^fav_"))
-async def add_fav(client, cb):
-    code = int(cb.data.split("_")[1])
-    uid = cb.from_user.id
+async def add_fav(client,cb):
 
-    fav_col.update_one(
-        {"user_id": uid},
-        {"$addToSet": {"movies": code}},
-        upsert=True
-    )
+    code=cb.data.split("_")[1]
+    fav=load(FAV_FILE)
+    uid=str(cb.from_user.id)
 
-    await cb.answer("⭐ Added to favorites", show_alert=True)
+    fav.setdefault(uid,[])
 
-@app.on_callback_query(filters.regex("^myfav$"))
-async def myfav(client, cb):
-    fav = fav_col.find_one({"user_id": cb.from_user.id})
-    if not fav or not fav.get("movies"):
-        await cb.answer("No favorites yet", show_alert=True)
+    if code in fav[uid]:
+        await cb.answer("Already added ⭐",show_alert=True)
         return
 
-    text = "⭐ Favorites:\n\n"
-    for code in fav["movies"]:
-        m = movies_col.find_one({"code": code})
-        if m:
-            text += f"{m['title']} (Code {m['code']})\n"
+    fav[uid].append(code)
+    save(FAV_FILE,fav)
 
-    await cb.message.edit_text(text, reply_markup=user_menu(cb.from_user.id in ADMIN_IDS))
+    await cb.answer("Added to favorites ⭐",show_alert=True)
 
-# ================= STATS =================
+@app.on_callback_query(filters.regex("myfav"))
+async def myfav(client,cb):
 
-@app.on_callback_query(filters.regex("^stats$"))
-async def stats(client, cb):
+    fav=load(FAV_FILE).get(str(cb.from_user.id),[])
+    movies=load(MOVIES_FILE)
+
+    if not fav:
+        await cb.answer("No favorites yet!",show_alert=True)
+        return
+
+    text="⭐ Favorites:\n\n"
+    for c in fav:
+        for m in movies:
+            if str(m["code"])==str(c):
+                text+=f"{m['title']} (Code {m['code']})\n"
+
+    await cb.message.edit_text(text,reply_markup=user_menu(cb.from_user.id in ADMIN_IDS))
+
+# ===== STATS =====
+
+@app.on_callback_query(filters.regex("stats"))
+async def stats(client,cb):
+
+    movies=load(MOVIES_FILE)
+    users=load(USERS_FILE)
+
     await cb.message.edit_text(
         f"📊 Statistics\n\n"
-        f"👥 Users: {users_col.count_documents({})}\n"
-        f"🎬 Movies: {movies_col.count_documents({})}\n"
-        f"⬇ Downloads: {sum(m.get('downloads',0) for m in movies_col.find())}",
+        f"👥 Users: {len(users)}\n"
+        f"🎬 Movies: {len(movies)}\n"
+        f"⬇ Downloads: {sum(m['downloads'] for m in movies)}",
         reply_markup=user_menu(cb.from_user.id in ADMIN_IDS)
     )
 
-# ================= TOP MOVIES =================
+# ===== TOP (NAME + CODE ONLY) =====
 
-@app.on_callback_query(filters.regex("^top$"))
-async def top_movies(client, cb):
+@app.on_callback_query(filters.regex("top"))
+async def top(client, cb):
 
-    top = movies_col.find().sort("downloads", -1).limit(5)
+    movies = load(MOVIES_FILE)
+
+    if not movies:
+        await cb.answer("No movies yet", show_alert=True)
+        return
+
+    top = sorted(movies, key=lambda x: x.get("downloads", 0), reverse=True)[:5]
 
     text = "📈 Top Movies:\n\n"
-    i = 1
-    for m in top:
-        title = m["title"].splitlines()[0]
+
+    for i, m in enumerate(top, 1):
+        title = m["title"].splitlines()[1]   # only first line
         text += f"{i}. {title} (Code: {m['code']})\n"
-        i += 1
 
-    await cb.message.edit_text(text, reply_markup=user_menu(cb.from_user.id in ADMIN_IDS))
+    await cb.message.edit_text(
+        text,
+        reply_markup=user_menu(cb.from_user.id in ADMIN_IDS)
+    )
 
-# ================= ADMIN PANEL =================
+# ===== REQUEST AUTO APPROVE =====
 
-@app.on_callback_query(filters.regex("^admin$"))
-async def admin_panel(client, cb):
-    if cb.from_user.id not in ADMIN_IDS:
+@app.on_message(filters.command("request"))
+async def request_movie(client,msg):
+
+    name=msg.text.replace("/request","").strip().lower()
+    movies=load(MOVIES_FILE)
+
+    for m in movies:
+        if name in m["title"].lower():
+            await client.send_video(msg.chat.id,m["file_id"],caption=m["title"])
+            return
+
+    req=load(REQUEST_FILE)
+    req.append(name)
+    save(REQUEST_FILE,req)
+
+    await msg.reply("📥 Requested! Will be added soon")
+
+# ===== ADMIN PANEL =====
+
+@app.on_callback_query(filters.regex("admin"))
+async def admin_panel(client,cb):
+    if cb.from_user.id not in ADMIN_IDS: return
+    await cb.message.edit_text("⭐ Admin Panel",reply_markup=admin_menu())
+
+@app.on_callback_query(filters.regex("back"))
+async def back(client,cb):
+    await cb.message.edit_text("🎬 Menu",reply_markup=user_menu(cb.from_user.id in ADMIN_IDS))
+
+@app.on_callback_query(filters.regex("view_requests"))
+async def view_req(client,cb):
+
+    if cb.from_user.id not in ADMIN_IDS: return
+    req=load(REQUEST_FILE)
+
+    if not req:
+        await cb.message.edit_text("No requests",reply_markup=admin_menu())
         return
-    await cb.message.edit_text("⭐ Admin Panel", reply_markup=admin_menu())
 
-@app.on_callback_query(filters.regex("^back$"))
-async def back(client, cb):
-    await cb.message.edit_text("🎬 Menu", reply_markup=user_menu(cb.from_user.id in ADMIN_IDS))
+    text="📥 Requests:\n\n"
+    for i,r in enumerate(req,1):
+        text+=f"{i}. {r}\n"
 
-# ================= RUN =================
+    await cb.message.edit_text(text,reply_markup=admin_menu())
+
+# ===== RUN =====
 
 print("🤖 Movie bot running...")
 app.run()
