@@ -114,7 +114,6 @@ async def start(client, msg):
     await send_welcome(client, msg)
 
     await msg.reply(
-        "🎬 Send movie code or name to search",
         reply_markup=user_menu()
     )
 
