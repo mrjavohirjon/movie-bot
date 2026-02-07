@@ -51,7 +51,9 @@ def join_btn():
 
 def user_menu(admin=False):
     btn = [
-        [👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.\n ✍🏻 Kino kodini yuboring.]
+        [InlineKeyboardButton("📈 Top Movies", callback_data="top")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
+        [InlineKeyboardButton("⭐ Favorites", callback_data="myfav")]
     ]
     if admin:
         btn.append([InlineKeyboardButton("⭐ Admin Panel", callback_data="admin")])
@@ -83,8 +85,7 @@ async def start(client, msg):
         return
 
     await msg.reply(
-        "🎬 Send movie code or name to search",
-        reply_markup=user_menu(msg.from_user.id in ADMIN_IDS)
+        "🎬 👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.✍🏻 Kino kodini yuboring.")
     )
 
 @app.on_callback_query(filters.regex("check"))
