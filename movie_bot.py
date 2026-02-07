@@ -81,14 +81,16 @@ def admin_menu():
 # ===== START =====
 
 @app.on_message(filters.command("start"))
-async def start(client,msg):
+async def start(client, msg):
 
-    users = load(USERS_FILE)
-    if msg.from_user.id not in users:
-        users.append(msg.from_user.id)
-        save(USERS_FILE,users)
+    # save user to MongoDB if not exists
+    users_col.update_one(
+        {"user_id": msg.from_user.id},
+        {"$setOnInsert": {"user_id": msg.from_user.id}},
+        upsert=True
+    )
 
-    if not await joined(client,msg.from_user.id):
+    if not await joined(client, msg.from_user.id):
         await msg.reply("⚠ Join channel first:", reply_markup=join_btn())
         return
 
