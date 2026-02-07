@@ -53,7 +53,7 @@ def join_btn():
 
 # ===== MENUS =====
 
-ddef user_menu():
+def user_menu():
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
