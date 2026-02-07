@@ -214,29 +214,24 @@ async def handle_broadcast(client,msg):
 )
 async def search(client, msg):
 
-    # ignore messages without user (channels, anonymous)
-    if not msg.from_user:
-        return
-
-    # force join check (reply only once)
     if not await force_join(client, msg):
         return
 
-    q = msg.text.strip()
+    # ignore messages without a user (channels, anonymous, etc.)
+    if not msg.from_user:
+        return
 
-    # find movie
+    q = msg.text.lower().strip()
+
+    movie = None
     if q.isdigit():
         movie = movies_col.find_one({"code": int(q)})
     else:
-        movie = movies_col.find_one(
-            {"title": {"$regex": q, "$options": "i"}}
-        )
+        movie = movies_col.find_one({"title": {"$regex": q, "$options": "i"}})
 
-    # ❌ no movie found → reply once
     if not movie:
-        return
+        return "No movies Found"
 
-    # ✅ send movie
     await client.send_video(
         msg.chat.id,
         movie["file_id"],
@@ -246,11 +241,11 @@ async def search(client, msg):
         ])
     )
 
-    # update downloads
     movies_col.update_one(
         {"code": movie["code"]},
         {"$inc": {"downloads": 1}}
     )
+
 
 # ===== FAVORITES =====
 
