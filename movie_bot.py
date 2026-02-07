@@ -338,16 +338,3 @@ async def view_req(client, cb):
 
 print("🤖 Movie bot running...")
 app.run()
-
-#======TIme======#
-
-while True:
-    try:
-        app.run()
-    except FloodWait as e:
-        wait = int(e.value) + 5
-        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
-        time.sleep(wait)
-    except Exception as e:
-        print("❌ Fatal error:", e)
-        time.sleep(10000)
