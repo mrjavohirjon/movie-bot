@@ -184,6 +184,10 @@ async def handle_broadcast(client,msg):
 @app.on_message(filters.text & ~filters.regex("^/"))
 async def search(client, msg):
 
+    # ignore messages without a user (channels, anonymous, etc.)
+    if not msg.from_user:
+        return
+
     if not await joined(client, msg.from_user.id):
         return
 
