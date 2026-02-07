@@ -277,7 +277,7 @@ async def top(client, cb):
     i = 1
 
     for m in top:
-        title = m["title"].splitlines()[0]  # ✅ first line
+        title = m["title"].splitlines()[2]  # ✅ first line
         text += f"{i}. {title} (Code: {m['code']})\n"
         i += 1
 
