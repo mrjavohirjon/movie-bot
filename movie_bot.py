@@ -86,6 +86,7 @@ async def start(client, msg):
 
     await msg.reply(
         "🎬 👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.✍🏻 Kino kodini yuboring."
+        reply_markup=user_menu(msg.from_user.id in ADMIN_IDS)
     )
 
 @app.on_callback_query(filters.regex("check"))
