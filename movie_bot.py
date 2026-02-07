@@ -230,7 +230,7 @@ async def search(client, msg):
         movie = movies_col.find_one({"title": {"$regex": q, "$options": "i"}})
 
     if not movie:
-        return  # ⛔ prevents spam / loops
+        return  "No movies Found"
 
     await client.send_video(
         msg.chat.id,
