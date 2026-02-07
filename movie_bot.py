@@ -111,7 +111,7 @@ async def save_movie(client, msg):
 
 # ================= SEARCH =================
 
-@app.on_message(filters.text & ~filters.command)
+@app.on_message(filters.text & ~filters.regex("^/"))
 async def search(client, msg):
 
     if not await joined(client, msg.from_user.id):
