@@ -234,7 +234,6 @@ async def search(client, msg):
 
     # ❌ no movie found → reply once
     if not movie:
-        await msg.reply("❌ No movie found")
         return
 
     # ✅ send movie
