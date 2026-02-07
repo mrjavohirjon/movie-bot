@@ -1,41 +1,62 @@
+import asyncio
+import logging
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait, UserNotParticipant, BadRequest
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from pymongo import MongoClient
-import time
-from pyrogram.errors import FloodWait
-from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton
-)
+from pymongo.errors import ServerSelectionTimeoutError
 
-MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
+# ==============================================================================
+# ⬇️ CONFIGURATION ⬇️
+# ==============================================================================
 
-mongo = MongoClient(MONGO_URL)
-db = mongo.moviebot
+# REPLACE WITH YOUR REAL VALUES
 
-movies_col = db.movies
-users_col = db.users
-fav_col = db.favorites
-req_col = db.requests
-
-# ===== CONFIG =====
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
+BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk" # ⚠️ REPLACE WITH YOUR BOT TOKEN
 
-MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
-MANDATORY_CHANNEL = "@TG_Manager_uz"
+MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
-ADMIN_IDS = [5014031582]
+# USERNAME MUST START WITH @
+MOVIE_CHANNEL = "@hshhshshshdgegeuejje" 
+MANDATORY_CHANNEL = "@TG_Manager_uz" 
 
+ADMIN_IDS = [] 
 
-# ==================
+# ==============================================================================
 
+# 1. Setup Logging (To see errors clearly)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+print("⏳ 1. Testing Database Connection...")
+
+try:
+    # 5 second timeout to prevent freezing
+    mongo = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+    mongo.server_info() # Force connection
+    
+    db = mongo.moviebot
+    movies_col = db.movies
+    users_col = db.users
+    fav_col = db.favorites
+    req_col = db.requests
+    
+    print("✅ 2. Database Connected Successfully!")
+
+except Exception as e:
+    print(f"❌ CRITICAL DATABASE ERROR: {e}")
+    print("Check your DNS (8.8.8.8) or IP Whitelist in Atlas.")
+    exit()
+
+# 3. Initialize Bot
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-
+# ==============================================================================
+# ⬇️ HELPER FUNCTIONS ⬇️
+# ==============================================================================
 # ===== JOIN CHECK =====
 
 async def joined(client, uid):
@@ -78,14 +99,17 @@ async def force_join(client, msg):
 
 # ===== MENUS =====
 
-def user_menu():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-            [KeyboardButton("⭐ Favorites")]
-        ],
-        resize_keyboard=True
-    )
+def user_menu(is_admin=False): # Add is_admin argument
+    buttons = [
+        [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
+        [KeyboardButton("⭐ Favorites")]
+    ]
+    
+    # Optional: Add an Admin button if the user is an admin
+    if is_admin:
+        buttons.append([KeyboardButton("⭐ Admin Panel")])
+
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def admin_menu():
     return ReplyKeyboardMarkup(
@@ -207,16 +231,22 @@ async def handle_broadcast(client,msg):
         await msg.reply("❌ Broadcast cancelled")
         return
 
-    users = load(USERS_FILE)
+    # FIX: Get users from MongoDB
+    users = users_col.find({}) 
 
+    success = 0
     for u in users:
         try:
-            await msg.copy(u)
+            user_id = u.get("user_id")
+            if user_id:
+                await msg.copy(user_id)
+                success += 1
+                await asyncio.sleep(0.05) # Prevent flooding Telegram
         except:
             pass
-
+            
     broadcast_wait.remove(msg.from_user.id)
-    await msg.reply("✅ Broadcast sent!")
+    await msg.reply(f"✅ Broadcast sent to {success} users!")
 
 # ===== SEARCH =====
 
@@ -393,7 +423,9 @@ async def view_req(client, cb):
 
     await cb.message.edit_text(text, reply_markup=admin_menu())
 
-# ===== RUN =====
+# ==============================================================================
+# ⬇️ RUNNER ⬇️
+# ==============================================================================
 
-print("🤖 Movie bot running...")
+print("🤖 Bot is starting... Press Ctrl+C to stop.")
 app.run()
