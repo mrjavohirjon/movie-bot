@@ -472,7 +472,11 @@ scheduler.add_job(
     minute=0
 )
 
-scheduler.start()
+@app.on_startup()
+async def start_scheduler():
+    scheduler.start()
+    print("⏰ Scheduler started")
+
 
 # ===== RUN =====
 
