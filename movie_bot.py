@@ -3,6 +3,8 @@ from pymongo import MongoClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 import time
+import asyncio
+from pyrogram import idle
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
     InlineKeyboardMarkup,
@@ -472,10 +474,12 @@ scheduler.add_job(
     minute=0
 )
 
-@app.on_startup()
-async def start_scheduler():
+async def main():
+    await app.start()
     scheduler.start()
+    print("🤖 Bot started")
     print("⏰ Scheduler started")
+    await idle()
 
 
 # ===== RUN =====
