@@ -1,5 +1,7 @@
 from pyrogram import Client, filters
 from pymongo import MongoClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timedelta
 import time
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
@@ -107,9 +109,16 @@ async def start(client, msg):
 
     users_col.update_one(
         {"user_id": msg.from_user.id},
-        {"$setOnInsert": {"user_id": msg.from_user.id}},
+        {
+            "$setOnInsert": {
+                "user_id": msg.from_user.id,
+                "joined_at": datetime.utcnow()
+            }
+        },
         upsert=True
     )
+
+
 
     await send_welcome(client, msg)
 
@@ -255,7 +264,10 @@ async def search(client, msg):
 
     movies_col.update_one(
         {"code": movie["code"]},
-        {"$inc": {"downloads": 1}}
+        {
+            "$inc": {"downloads": 1},
+            "$set": {"last_download": datetime.utcnow()}
+        }
     )
 
 
@@ -303,21 +315,39 @@ async def myfav_text(client, msg):
 # ===== STATS =====
 
 @app.on_message(filters.text & filters.regex("^📊 Statistics$"))
-async def stats_text(client, msg):
+async def admin_stats(client, msg):
 
-    if not await force_join(client, msg):
+    if msg.from_user.id not in ADMIN_IDS:
         return
 
-    users = users_col.count_documents({})
-    movies = movies_col.count_documents({})
-    downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+    now = datetime.utcnow()
+    since = now - timedelta(days=1)
 
-    await msg.reply(
-        f"📊 Statistics\n\n"
-        f"👥 Users: {users}\n"
-        f"🎬 Movies: {movies}\n"
-        f"⬇ Downloads: {downloads}"
+    # totals
+    total_users = users_col.count_documents({})
+    total_movies = movies_col.count_documents({})
+    total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+
+    # daily
+    daily_new_users = users_col.count_documents({
+        "joined_at": {"$gte": since}
+    })
+
+    daily_downloads = movies_col.count_documents({
+        "last_download": {"$gte": since}
+    })
+
+    text = (
+        "📊 **Daily & Total Statistics**\n\n"
+        f"👤 New users today: {daily_new_users}\n"
+        f"⬇ Downloads today: {daily_downloads}\n\n"
+        f"👥 Total users: {total_users}\n"
+        f"🎬 Total movies: {total_movies}\n"
+        f"⬇ Total downloads: {total_downloads}\n\n"
+        f"⏰ Time: {now.strftime('%Y-%m-%d %H:%M')} UTC"
     )
+
+    await msg.reply(text)
 
 # ===== TOP (NAME + CODE ONLY) =====
 
@@ -391,6 +421,58 @@ async def view_req(client, cb):
         text += f"{i}. {r['name']}\n"
 
     await cb.message.edit_text(text, reply_markup=admin_menu())
+
+#=====Daily_statistics======#
+
+async def send_daily_stats():
+    try:
+        now = datetime.utcnow()
+        since = now - timedelta(days=1)
+
+        total_users = users_col.count_documents({})
+        total_movies = movies_col.count_documents({})
+        total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+
+        # DAILY stats
+        daily_new_users = users_col.count_documents({
+            "joined_at": {"$gte": since}
+        })
+
+        daily_downloads = movies_col.count_documents({
+            "last_download": {"$gte": since}
+        })
+
+        text = (
+            "📊 **Daily & Total Statistics**\n\n"
+            f"👤 New users today: {daily_new_users}\n"
+            f"⬇ Downloads today: {daily_downloads}\n\n"
+            f"👥 Total users: {total_users}\n"
+            f"🎬 Total movies: {total_movies}\n"
+            f"⬇ Total downloads: {total_downloads}\n\n"
+            "⏰ Time: 16:00 UTC"
+        )
+
+        await app.send_message(
+            chat_id=MOVIE_CHANNEL,
+            text=text
+        )
+
+    except Exception as e:
+        print("❌ Failed to send daily stats:", e)
+
+
+#=====Scheduler======#
+
+scheduler = AsyncIOScheduler(timezone="UTC")
+
+scheduler.add_job(
+    send_daily_stats,
+    trigger="cron",
+    hour=16,
+    minute=0
+)
+
+scheduler.start()
 
 # ===== RUN =====
 
