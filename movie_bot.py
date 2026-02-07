@@ -19,7 +19,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8342971337:AAEhzMIdj4nTErpEBz7kmvw29q7k95HTsfI"
+BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
@@ -339,3 +339,15 @@ async def view_req(client, cb):
 
 print("🤖 Movie bot running...")
 app.run()
+
+
+while True:
+    try:
+        app.run()
+    except FloodWait as e:
+        wait = int(e.value) + 5
+        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
+        time.sleep(wait)
+    except Exception as e:
+        print("❌ Fatal error:", e)
+        time.sleep(10000)
