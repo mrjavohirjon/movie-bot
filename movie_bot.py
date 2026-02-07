@@ -51,6 +51,22 @@ def join_btn():
         [InlineKeyboardButton("✅ Check", callback_data="check")]
     ])
 
+#=======JOIN FORCE=====#
+
+async def force_join(client, msg):
+    if not msg.from_user:
+        return False
+
+    if not await joined(client, msg.from_user.id):
+        await msg.reply(
+            "⚠ You must join the channel to use this bot.",
+            reply_markup=join_btn()
+        )
+        return False
+
+    return True
+
+
 # ===== MENUS =====
 
 def user_menu():
@@ -76,20 +92,21 @@ def admin_menu():
 
 @app.on_message(filters.command("start"))
 async def start(client, msg):
+
+    if not await force_join(client, msg):
+        return
+
     users_col.update_one(
         {"user_id": msg.from_user.id},
         {"$setOnInsert": {"user_id": msg.from_user.id}},
         upsert=True
     )
 
-    if not await joined(client, msg.from_user.id):
-        await msg.reply("⚠ Join channel first:", reply_markup=join_btn())
-        return
-
     await msg.reply(
         "🎬 Send movie code or name to search",
         reply_markup=user_menu()
     )
+
 
 @app.on_callback_query(filters.regex("check"))
 async def check(client,cb):
@@ -191,6 +208,9 @@ async def handle_broadcast(client,msg):
 )
 async def search(client, msg):
 
+    if not await force_join(client, msg):
+        return
+
     # ignore messages without a user (channels, anonymous, etc.)
     if not msg.from_user:
         return
@@ -228,6 +248,9 @@ async def search(client, msg):
 @app.on_callback_query(filters.regex("^fav_"))
 async def add_fav(client, cb):
 
+    if not await force_join(client, msg):
+        return
+
     code = int(cb.data.split("_")[1])
     uid = cb.from_user.id
 
@@ -242,6 +265,9 @@ async def add_fav(client, cb):
 
 @app.on_callback_query(filters.regex("myfav"))
 async def myfav(client, cb):
+
+    if not await force_join(client, msg):
+        return
 
     fav = fav_col.find_one({"user_id": cb.from_user.id})
 
@@ -265,6 +291,9 @@ async def myfav(client, cb):
 @app.on_message(filters.text & filters.regex("^📊 Statistics$"))
 async def stats_text(client, msg):
 
+    if not await force_join(client, msg):
+        return
+
     users = users_col.count_documents({})
     movies = movies_col.count_documents({})
     downloads = sum(m.get("downloads", 0) for m in movies_col.find())
@@ -280,6 +309,9 @@ async def stats_text(client, msg):
 
 @app.on_message(filters.text & filters.regex("^📈 Top Movies$"))
 async def top_text(client, msg):
+
+    if not await force_join(client, msg):
+        return
 
     movies = list(
         movies_col.find().sort("downloads", -1).limit(5)
@@ -300,6 +332,9 @@ async def top_text(client, msg):
 
 @app.on_message(filters.command("request"))
 async def request_movie(client, msg):
+
+    if not await force_join(client, msg):
+        return
 
     name = msg.text.replace("/request", "").strip().lower()
 
