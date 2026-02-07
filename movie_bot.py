@@ -2,6 +2,8 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
+import time
+from pyrogram.errors import FloodWait
 
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
@@ -12,6 +14,21 @@ movies_col = db.movies
 users_col = db.users
 fav_col = db.favorites
 req_col = db.requests
+
+#=======TIme======#
+
+print("🤖 Movie bot starting...")
+
+while True:
+    try:
+        app.run()
+    except FloodWait as e:
+        wait = int(e.value) + 5
+        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
+        time.sleep(wait)
+    except Exception as e:
+        print("❌ Fatal error:", e)
+        time.sleep(10000)
 
 
 # ===== CONFIG =====
