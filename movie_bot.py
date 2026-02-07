@@ -1,62 +1,45 @@
-import asyncio
-import logging
 from pyrogram import Client, filters
-from pyrogram.errors import FloodWait, UserNotParticipant, BadRequest
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from pymongo import MongoClient
-from pymongo.errors import ServerSelectionTimeoutError
-
-# ==============================================================================
-# ⬇️ CONFIGURATION ⬇️
-# ==============================================================================
-
-# REPLACE WITH YOUR REAL VALUES
-
-
-API_ID = 38119035
-API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk" # ⚠️ REPLACE WITH YOUR BOT TOKEN
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timedelta
+import time
+import asyncio
+from pyrogram import idle
+from pyrogram.errors import FloodWait
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
-# USERNAME MUST START WITH @
-MOVIE_CHANNEL = "@hshhshshshdgegeuejje" 
-MANDATORY_CHANNEL = "@TG_Manager_uz" 
+mongo = MongoClient(MONGO_URL)
+db = mongo.moviebot
 
-ADMIN_IDS = [] 
+movies_col = db.movies
+users_col = db.users
+fav_col = db.favorites
+req_col = db.requests
 
-# ==============================================================================
+# ===== CONFIG =====
 
-# 1. Setup Logging (To see errors clearly)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+API_ID = 38119035
+API_HASH = "0f84597433eacb749fd482ad238a104e"
+BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
 
-print("⏳ 1. Testing Database Connection...")
+MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
+MANDATORY_CHANNEL = "@TG_Manager_uz"
 
-try:
-    # 5 second timeout to prevent freezing
-    mongo = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-    mongo.server_info() # Force connection
-    
-    db = mongo.moviebot
-    movies_col = db.movies
-    users_col = db.users
-    fav_col = db.favorites
-    req_col = db.requests
-    
-    print("✅ 2. Database Connected Successfully!")
+ADMIN_IDS = [5014031582]
 
-except Exception as e:
-    print(f"❌ CRITICAL DATABASE ERROR: {e}")
-    print("Check your DNS (8.8.8.8) or IP Whitelist in Atlas.")
-    exit()
 
-# 3. Initialize Bot
+# ==================
+
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ==============================================================================
-# ⬇️ HELPER FUNCTIONS ⬇️
-# ==============================================================================
+
 # ===== JOIN CHECK =====
 
 async def joined(client, uid):
@@ -99,17 +82,14 @@ async def force_join(client, msg):
 
 # ===== MENUS =====
 
-def user_menu(is_admin=False): # Add is_admin argument
-    buttons = [
-        [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-        [KeyboardButton("⭐ Favorites")]
-    ]
-    
-    # Optional: Add an Admin button if the user is an admin
-    if is_admin:
-        buttons.append([KeyboardButton("⭐ Admin Panel")])
-
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+def user_menu():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
+            [KeyboardButton("⭐ Favorites")]
+        ],
+        resize_keyboard=True
+    )
 
 def admin_menu():
     return ReplyKeyboardMarkup(
@@ -126,19 +106,29 @@ def admin_menu():
 @app.on_message(filters.command("start"))
 async def start(client, msg):
 
+    # Force join check
     if not await force_join(client, msg):
         return
 
+    # Save user if not exists
     users_col.update_one(
         {"user_id": msg.from_user.id},
-        {"$setOnInsert": {"user_id": msg.from_user.id}},
+        {
+            "$setOnInsert": {
+                "user_id": msg.from_user.id,
+                "joined_at": datetime.utcnow()
+            }
+        },
         upsert=True
     )
 
-    await send_welcome(client, msg)
+    # User name
+    name = msg.from_user.first_name or "Do'stim"
 
+    # Send welcome message + keyboard (ONLY ONE reply)
     await msg.reply(
-        "🎬 Send movie code or name to search",
+        f"👋 Assalomu alaykum {name} 🐾 botimizga xush kelibsiz.\n\n"
+        "✍🏻 Kino kodini yuboring.",
         reply_markup=user_menu()
     )
 
@@ -231,22 +221,16 @@ async def handle_broadcast(client,msg):
         await msg.reply("❌ Broadcast cancelled")
         return
 
-    # FIX: Get users from MongoDB
-    users = users_col.find({}) 
+    users = load(USERS_FILE)
 
-    success = 0
     for u in users:
         try:
-            user_id = u.get("user_id")
-            if user_id:
-                await msg.copy(user_id)
-                success += 1
-                await asyncio.sleep(0.05) # Prevent flooding Telegram
+            await msg.copy(u)
         except:
             pass
-            
+
     broadcast_wait.remove(msg.from_user.id)
-    await msg.reply(f"✅ Broadcast sent to {success} users!")
+    await msg.reply("✅ Broadcast sent!")
 
 # ===== SEARCH =====
 
@@ -286,7 +270,10 @@ async def search(client, msg):
 
     movies_col.update_one(
         {"code": movie["code"]},
-        {"$inc": {"downloads": 1}}
+        {
+            "$inc": {"downloads": 1},
+            "$set": {"last_download": datetime.utcnow()}
+        }
     )
 
 
@@ -334,21 +321,39 @@ async def myfav_text(client, msg):
 # ===== STATS =====
 
 @app.on_message(filters.text & filters.regex("^📊 Statistics$"))
-async def stats_text(client, msg):
+async def admin_stats(client, msg):
 
-    if not await force_join(client, msg):
+    if msg.from_user.id not in ADMIN_IDS:
         return
 
-    users = users_col.count_documents({})
-    movies = movies_col.count_documents({})
-    downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+    now = datetime.utcnow()
+    since = now - timedelta(days=1)
 
-    await msg.reply(
-        f"📊 Statistics\n\n"
-        f"👥 Users: {users}\n"
-        f"🎬 Movies: {movies}\n"
-        f"⬇ Downloads: {downloads}"
+    # totals
+    total_users = users_col.count_documents({})
+    total_movies = movies_col.count_documents({})
+    total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+
+    # daily
+    daily_new_users = users_col.count_documents({
+        "joined_at": {"$gte": since}
+    })
+
+    daily_downloads = movies_col.count_documents({
+        "last_download": {"$gte": since}
+    })
+
+    text = (
+        "📊 **Daily & Total Statistics**\n\n"
+        f"👤 New users today: {daily_new_users}\n"
+        f"⬇ Downloads today: {daily_downloads}\n\n"
+        f"👥 Total users: {total_users}\n"
+        f"🎬 Total movies: {total_movies}\n"
+        f"⬇ Total downloads: {total_downloads}\n\n"
+        f"⏰ Time: {now.strftime('%Y-%m-%d %H:%M')} UTC"
     )
+
+    await msg.reply(text)
 
 # ===== TOP (NAME + CODE ONLY) =====
 
@@ -423,9 +428,65 @@ async def view_req(client, cb):
 
     await cb.message.edit_text(text, reply_markup=admin_menu())
 
-# ==============================================================================
-# ⬇️ RUNNER ⬇️
-# ==============================================================================
+#=====Daily_statistics======#
 
-print("🤖 Bot is starting... Press Ctrl+C to stop.")
+async def send_daily_stats():
+    try:
+        now = datetime.utcnow()
+        since = now - timedelta(days=1)
+
+        total_users = users_col.count_documents({})
+        total_movies = movies_col.count_documents({})
+        total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+
+        # DAILY stats
+        daily_new_users = users_col.count_documents({
+            "joined_at": {"$gte": since}
+        })
+
+        daily_downloads = movies_col.count_documents({
+            "last_download": {"$gte": since}
+        })
+
+        text = (
+            "📊 **Daily & Total Statistics**\n\n"
+            f"👤 New users today: {daily_new_users}\n"
+            f"⬇ Downloads today: {daily_downloads}\n\n"
+            f"👥 Total users: {total_users}\n"
+            f"🎬 Total movies: {total_movies}\n"
+            f"⬇ Total downloads: {total_downloads}\n\n"
+            "⏰ Time: 16:00 UTC"
+        )
+
+        await app.send_message(
+            chat_id=MOVIE_CHANNEL,
+            text=text
+        )
+
+    except Exception as e:
+        print("❌ Failed to send daily stats:", e)
+
+
+#=====Scheduler======#
+
+scheduler = AsyncIOScheduler(timezone="UTC")
+
+scheduler.add_job(
+    send_daily_stats,
+    trigger="cron",
+    hour=16,
+    minute=0
+)
+
+async def main():
+    await app.start()
+    scheduler.start()
+    print("🤖 Bot started")
+    print("⏰ Scheduler started")
+    await idle()
+
+
+# ===== RUN =====
+
+print("🤖 Movie bot running...")
 app.run()
