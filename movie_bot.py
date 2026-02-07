@@ -4,6 +4,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 import time
 import asyncio
+from datetime import datetime, timezone
+datetime.now(timezone.utc)
 from pyrogram import idle
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
