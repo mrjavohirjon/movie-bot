@@ -1,7 +1,6 @@
 import json, os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import sys
 from pymongo import MongoClient
 
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
@@ -14,12 +13,6 @@ users_col = db.users
 fav_col = db.favorites
 req_col = db.requests
 
-
-if os.path.exists(lock_file):
-    print("Bot already running!")
-    sys.exit()
-
-open(lock_file,"w").close()
 
 # ===== CONFIG =====
 
