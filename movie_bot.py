@@ -27,7 +27,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
+BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
@@ -125,6 +125,12 @@ async def start(client, msg):
     await send_welcome(client, msg)
 
     await msg.reply(
+        async def send_welcome(client, msg):
+            name = msg.from_user.first_name or "Do'stim"
+            await msg.reply(
+                f"👋 Assalomu alaykum {name} 🐾 botimizga xush kelibsiz.\n\n"
+                "✍🏻 Kino kodini yuboring."
+            ),
         reply_markup=user_menu()
     )
 
