@@ -81,7 +81,7 @@ def user_menu():
 def admin_menu():
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("📊 Statistics"), KeyboardButton("📈 Top Movies")],
+            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
             [KeyboardButton("📥 Requests")],
             [KeyboardButton("⬅ Back")]
         ],
@@ -102,10 +102,16 @@ async def start(client, msg):
         upsert=True
     )
 
-    await msg.reply(
-        "🎬 Send movie code or name to search",
-        reply_markup=user_menu()
-    )
+    if msg.from_user.id in ADMIN_IDS:
+        await msg.reply(
+            "⭐ Admin Panel\n\n🎬 Send movie code or name to search",
+            reply_markup=admin_menu()
+        )
+    else:
+        await msg.reply(
+            "🎬 Send movie code or name to search",
+            reply_markup=user_menu()
+        )
 
 
 @app.on_callback_query(filters.regex("check"))
@@ -215,9 +221,6 @@ async def search(client, msg):
     if not msg.from_user:
         return
 
-    if not await joined(client, msg.from_user.id):
-        return
-
     q = msg.text.lower().strip()
 
     movie = None
@@ -248,7 +251,8 @@ async def search(client, msg):
 @app.on_callback_query(filters.regex("^fav_"))
 async def add_fav(client, cb):
 
-    if not await force_join(client, msg):
+    if not await joined(client, cb.from_user.id):
+        await cb.answer("⚠ Join the channel first", show_alert=True)
         return
 
     code = int(cb.data.split("_")[1])
@@ -283,7 +287,7 @@ async def myfav(client, cb):
 
     await cb.message.edit_text(
         text,
-        reply_markup=user_menu(cb.from_user.id in ADMIN_IDS)
+        reply_markup=user_menu()
     )
 
 # ===== STATS =====
@@ -382,16 +386,3 @@ async def view_req(client, cb):
 
 print("🤖 Movie bot running...")
 app.run()
-
-#======TIme======#
-
-while True:
-    try:
-        app.run()
-    except FloodWait as e:
-        wait = int(e.value) + 5
-        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
-        time.sleep(wait)
-    except Exception as e:
-        print("❌ Fatal error:", e)
-        time.sleep(10000)
