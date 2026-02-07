@@ -214,24 +214,30 @@ async def handle_broadcast(client,msg):
 )
 async def search(client, msg):
 
-    if not await force_join(client, msg):
-        return
-
-    # ignore messages without a user (channels, anonymous, etc.)
+    # ignore messages without user (channels, anonymous)
     if not msg.from_user:
         return
 
-    q = msg.text.lower().strip()
+    # force join check (reply only once)
+    if not await force_join(client, msg):
+        return
 
-    movie = None
+    q = msg.text.strip()
+
+    # find movie
     if q.isdigit():
         movie = movies_col.find_one({"code": int(q)})
     else:
-        movie = movies_col.find_one({"title": {"$regex": q, "$options": "i"}})
+        movie = movies_col.find_one(
+            {"title": {"$regex": q, "$options": "i"}}
+        )
 
+    # ❌ no movie found → reply once
     if not movie:
-        return  "No movies Found"
+        await msg.reply("❌ No movie found")
+        return
 
+    # ✅ send movie
     await client.send_video(
         msg.chat.id,
         movie["file_id"],
@@ -241,6 +247,7 @@ async def search(client, msg):
         ])
     )
 
+    # update downloads
     movies_col.update_one(
         {"code": movie["code"]},
         {"$inc": {"downloads": 1}}
@@ -267,28 +274,25 @@ async def add_fav(client, cb):
     await cb.answer("⭐ Added to favorites", show_alert=True)
 
 
-@app.on_callback_query(filters.regex("myfav"))
-async def myfav(client, cb):
+@app.on_message(filters.text & filters.regex("^⭐ Favorites$"))
+async def myfav_text(client, msg):
 
     if not await force_join(client, msg):
         return
 
-    fav = fav_col.find_one({"user_id": cb.from_user.id})
+    fav = fav_col.find_one({"user_id": msg.from_user.id})
 
     if not fav or not fav.get("movies"):
-        await cb.answer("No favorites yet!", show_alert=True)
+        await msg.reply("⭐ No favorites yet!")
         return
 
-    text = "⭐ Favorites:\n\n"
+    text = "⭐ Your Favorites:\n\n"
     for code in fav["movies"]:
-        m = movies_col.find_one({"code": code})
-        if m:
-            text += f"{m['title']} (Code {m['code']})\n"
+        movie = movies_col.find_one({"code": code})
+        if movie:
+            text += f"{movie['title']} (Code {movie['code']})\n"
 
-    await cb.message.edit_text(
-        text,
-        reply_markup=user_menu()
-    )
+    await msg.reply(text)
 
 # ===== STATS =====
 
