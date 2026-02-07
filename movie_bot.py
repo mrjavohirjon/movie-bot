@@ -54,14 +54,16 @@ def join_btn():
 
 # ===== MENUS =====
 
-def user_menu():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-            [KeyboardButton("⭐ Favorites")]
-        ],
-        resize_keyboard=True
-    )
+def user_menu(admin=False):
+    buttons = [
+        [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
+        [KeyboardButton("⭐ Favorites")]
+    ]
+
+    if admin:
+        buttons.append([KeyboardButton("⭐ Admin Panel")])
+
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def admin_menu():
     return ReplyKeyboardMarkup(
