@@ -335,6 +335,11 @@ async def view_req(client, cb):
 
     await cb.message.edit_text(text, reply_markup=admin_menu())
 
+# ===== RUN =====
+
+print("🤖 Movie bot running...")
+app.run()
+
 #======TIme======#
 
 while True:
@@ -347,8 +352,3 @@ while True:
     except Exception as e:
         print("❌ Fatal error:", e)
         time.sleep(10000)
-
-# ===== RUN =====
-
-print("🤖 Movie bot running...")
-app.run()
