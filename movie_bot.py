@@ -29,7 +29,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
+BOT_TOKEN = "5449865657:AAHm5lhjyYiieEdW1fpJTIde2D_daOlFJKc"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
