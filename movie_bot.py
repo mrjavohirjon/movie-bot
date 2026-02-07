@@ -85,7 +85,7 @@ async def start(client, msg):
         return
 
     await msg.reply(
-        "🎬 👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.✍🏻 Kino kodini yuboring.")
+        "🎬 👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.✍🏻 Kino kodini yuboring."
     )
 
 @app.on_callback_query(filters.regex("check"))
