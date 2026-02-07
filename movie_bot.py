@@ -1,10 +1,6 @@
 from pyrogram import Client, filters
 from pymongo import MongoClient
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timedelta
 import time
-import asyncio
-from pyrogram import idle
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
     InlineKeyboardMarkup,
@@ -27,7 +23,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
+BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
@@ -111,26 +107,14 @@ async def start(client, msg):
 
     users_col.update_one(
         {"user_id": msg.from_user.id},
-        {
-            "$setOnInsert": {
-                "user_id": msg.from_user.id,
-                "joined_at": datetime.utcnow()
-            }
-        },
+        {"$setOnInsert": {"user_id": msg.from_user.id}},
         upsert=True
     )
-
-
 
     await send_welcome(client, msg)
 
     await msg.reply(
-        async def send_welcome(client, msg):
-            name = msg.from_user.first_name or "Do'stim"
-            await msg.reply(
-                f"👋 Assalomu alaykum {name} 🐾 botimizga xush kelibsiz.\n\n"
-                "✍🏻 Kino kodini yuboring."
-            ),
+        "🎬 Send movie code or name to search",
         reply_markup=user_menu()
     )
 
@@ -272,10 +256,7 @@ async def search(client, msg):
 
     movies_col.update_one(
         {"code": movie["code"]},
-        {
-            "$inc": {"downloads": 1},
-            "$set": {"last_download": datetime.utcnow()}
-        }
+        {"$inc": {"downloads": 1}}
     )
 
 
@@ -323,39 +304,21 @@ async def myfav_text(client, msg):
 # ===== STATS =====
 
 @app.on_message(filters.text & filters.regex("^📊 Statistics$"))
-async def admin_stats(client, msg):
+async def stats_text(client, msg):
 
-    if msg.from_user.id not in ADMIN_IDS:
+    if not await force_join(client, msg):
         return
 
-    now = datetime.utcnow()
-    since = now - timedelta(days=1)
+    users = users_col.count_documents({})
+    movies = movies_col.count_documents({})
+    downloads = sum(m.get("downloads", 0) for m in movies_col.find())
 
-    # totals
-    total_users = users_col.count_documents({})
-    total_movies = movies_col.count_documents({})
-    total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
-
-    # daily
-    daily_new_users = users_col.count_documents({
-        "joined_at": {"$gte": since}
-    })
-
-    daily_downloads = movies_col.count_documents({
-        "last_download": {"$gte": since}
-    })
-
-    text = (
-        "📊 **Daily & Total Statistics**\n\n"
-        f"👤 New users today: {daily_new_users}\n"
-        f"⬇ Downloads today: {daily_downloads}\n\n"
-        f"👥 Total users: {total_users}\n"
-        f"🎬 Total movies: {total_movies}\n"
-        f"⬇ Total downloads: {total_downloads}\n\n"
-        f"⏰ Time: {now.strftime('%Y-%m-%d %H:%M')} UTC"
+    await msg.reply(
+        f"📊 Statistics\n\n"
+        f"👥 Users: {users}\n"
+        f"🎬 Movies: {movies}\n"
+        f"⬇ Downloads: {downloads}"
     )
-
-    await msg.reply(text)
 
 # ===== TOP (NAME + CODE ONLY) =====
 
@@ -429,64 +392,6 @@ async def view_req(client, cb):
         text += f"{i}. {r['name']}\n"
 
     await cb.message.edit_text(text, reply_markup=admin_menu())
-
-#=====Daily_statistics======#
-
-async def send_daily_stats():
-    try:
-        now = datetime.utcnow()
-        since = now - timedelta(days=1)
-
-        total_users = users_col.count_documents({})
-        total_movies = movies_col.count_documents({})
-        total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
-
-        # DAILY stats
-        daily_new_users = users_col.count_documents({
-            "joined_at": {"$gte": since}
-        })
-
-        daily_downloads = movies_col.count_documents({
-            "last_download": {"$gte": since}
-        })
-
-        text = (
-            "📊 **Daily & Total Statistics**\n\n"
-            f"👤 New users today: {daily_new_users}\n"
-            f"⬇ Downloads today: {daily_downloads}\n\n"
-            f"👥 Total users: {total_users}\n"
-            f"🎬 Total movies: {total_movies}\n"
-            f"⬇ Total downloads: {total_downloads}\n\n"
-            "⏰ Time: 16:00 UTC"
-        )
-
-        await app.send_message(
-            chat_id=MOVIE_CHANNEL,
-            text=text
-        )
-
-    except Exception as e:
-        print("❌ Failed to send daily stats:", e)
-
-
-#=====Scheduler======#
-
-scheduler = AsyncIOScheduler(timezone="UTC")
-
-scheduler.add_job(
-    send_daily_stats,
-    trigger="cron",
-    hour=16,
-    minute=0
-)
-
-async def main():
-    await app.start()
-    scheduler.start()
-    print("🤖 Bot started")
-    print("⏰ Scheduler started")
-    await idle()
-
 
 # ===== RUN =====
 
