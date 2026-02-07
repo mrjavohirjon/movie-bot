@@ -4,7 +4,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sys
 from pymongo import MongoClient
 
-MONGO_URL = "mongodb+srv://Mr_Javohirjon:ATQmOjn0TCdyKtTM@cluster0.qhsdrm8.mongodb.net/moviebot"
+MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 mongo = MongoClient(MONGO_URL)
 db = mongo.moviebot
