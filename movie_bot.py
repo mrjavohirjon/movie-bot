@@ -1,6 +1,6 @@
 
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton
 from pymongo import MongoClient
 import time
 from pyrogram.errors import FloodWait
@@ -49,24 +49,24 @@ def join_btn():
 
 # ===== MENUS =====
 
-def user_menu(admin=False):
-    btn = [
-        [InlineKeyboardButton("📈 Top Movies", callback_data="top")],
-        [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
-        [InlineKeyboardButton("⭐ Favorites", callback_data="myfav")]
-    ]
-    if admin:
-        btn.append([InlineKeyboardButton("⭐ Admin Panel", callback_data="admin")])
-    return InlineKeyboardMarkup(btn)
+def user_menu():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
+            [KeyboardButton("⭐ Favorites")]
+        ],
+        resize_keyboard=True
+    )
 
 def admin_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
-        [InlineKeyboardButton("📈 Top Movies", callback_data="top")],
-        [InlineKeyboardButton("📥 Requests", callback_data="view_requests")],
-        [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")],
-        [InlineKeyboardButton("⬅ Back", callback_data="back")]
-    ])
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📊 Statistics"), KeyboardButton("📈 Top Movies")],
+            [KeyboardButton("📥 Requests")],
+            [KeyboardButton("⬅ Back")]
+        ],
+        resize_keyboard=True
+    )
 
 # ===== START =====
 
@@ -85,7 +85,7 @@ async def start(client, msg):
         return
 
     await msg.reply(
-        "🎬 👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.✍🏻 Kino kodini yuboring.",
+        "🎬 Send movie code or name to search",
         reply_markup=user_menu(msg.from_user.id in ADMIN_IDS)
     )
 
@@ -256,36 +256,38 @@ async def myfav(client, cb):
 
 # ===== STATS =====
 
-@app.on_callback_query(filters.regex("stats"))
-async def stats(client, cb):
+@app.on_message(filters.text & filters.regex("^📊 Statistics$"))
+async def stats_text(client, msg):
 
-    await cb.message.edit_text(
+    users = users_col.count_documents({})
+    movies = movies_col.count_documents({})
+    downloads = sum(m.get("downloads", 0) for m in movies_col.find())
+
+    await msg.reply(
         f"📊 Statistics\n\n"
-        f"👥 Users: {users_col.count_documents({})}\n"
-        f"🎬 Movies: {movies_col.count_documents({})}\n"
-        f"⬇ Downloads: {sum(m.get('downloads', 0) for m in movies_col.find())}",
-        reply_markup=user_menu(cb.from_user.id in ADMIN_IDS)
+        f"👥 Users: {users}\n"
+        f"🎬 Movies: {movies}\n"
+        f"⬇ Downloads: {downloads}"
     )
 
 # ===== TOP (NAME + CODE ONLY) =====
 
-@app.on_callback_query(filters.regex("top"))
-async def top(client, cb):
+@app.on_message(filters.text & filters.regex("^📈 Top Movies$"))
+async def top_text(client, msg):
 
-    top = movies_col.find().sort("downloads", -1).limit(5)
+    movies = list(
+        movies_col.find().sort("downloads", -1).limit(5)
+    )
+
+    if not movies:
+        await msg.reply("No movies yet")
+        return
 
     text = "📈 Top Movies:\n\n"
-    i = 1
+    for i, m in enumerate(movies, 1):
+        text += f"{i}. {m['title']} (Code {m['code']})\n"
 
-    for m in top:
-        title = m["title"].splitlines()[2]  # ✅ first line
-        text += f"{i}. {title} (Code: {m['code']})\n"
-        i += 1
-
-    await cb.message.edit_text(
-        text,
-        reply_markup=user_menu(cb.from_user.id in ADMIN_IDS)
-    )
+    await msg.reply(text)
 
 
 # ===== REQUEST AUTO APPROVE =====
@@ -339,3 +341,16 @@ async def view_req(client, cb):
 
 print("🤖 Movie bot running...")
 app.run()
+
+#======TIme======#
+
+while True:
+    try:
+        app.run()
+    except FloodWait as e:
+        wait = int(e.value) + 5
+        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
+        time.sleep(wait)
+    except Exception as e:
+        print("❌ Fatal error:", e)
+        time.sleep(10000)
