@@ -19,7 +19,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
+BOT_TOKEN = "5449865657:AAEgdcczHEhEg8L0s-KubKOjpi_U-vJF3xg"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
@@ -51,9 +51,7 @@ def join_btn():
 
 def user_menu(admin=False):
     btn = [
-        [InlineKeyboardButton("📈 Top Movies", callback_data="top")],
-        [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
-        [InlineKeyboardButton("⭐ Favorites", callback_data="myfav")]
+        [👋 Assalomu alaykum Best boy 🐾 botimizga xush kelibsiz.\n ✍🏻 Kino kodini yuboring.]
     ]
     if admin:
         btn.append([InlineKeyboardButton("⭐ Admin Panel", callback_data="admin")])
@@ -340,6 +338,7 @@ async def view_req(client, cb):
 print("🤖 Movie bot running...")
 app.run()
 
+#======TIme======#
 
 while True:
     try:
