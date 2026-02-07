@@ -23,7 +23,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "5449865657:AAEgdcczHEhEg8L0s-KubKOjpi_U-vJF3xg"
+BOT_TOKEN = "8518789172:AAFO8TqcA8CsuYSyqtcCVEOzSUFQFRWsfsk"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
@@ -53,16 +53,14 @@ def join_btn():
 
 # ===== MENUS =====
 
-def user_menu(is_admin=False):
-    buttons = [
-        [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-        [KeyboardButton("⭐ Favorites")]
-    ]
-
-    if is_admin:
-        buttons.append([KeyboardButton("⭐ Admin Panel")])
-
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+ddef user_menu():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
+            [KeyboardButton("⭐ Favorites")]
+        ],
+        resize_keyboard=True
+    )
 
 def admin_menu():
     return ReplyKeyboardMarkup(
@@ -78,8 +76,6 @@ def admin_menu():
 
 @app.on_message(filters.command("start"))
 async def start(client, msg):
-
-    # save user to MongoDB if not exists
     users_col.update_one(
         {"user_id": msg.from_user.id},
         {"$setOnInsert": {"user_id": msg.from_user.id}},
@@ -92,7 +88,7 @@ async def start(client, msg):
 
     await msg.reply(
         "🎬 Send movie code or name to search",
-        reply_markup=user_menu(msg.from_user.id in ADMIN_IDS)
+        reply_markup=user_menu()
     )
 
 @app.on_callback_query(filters.regex("check"))
@@ -188,7 +184,11 @@ async def handle_broadcast(client,msg):
 
 # ===== SEARCH =====
 
-@app.on_message(filters.text & ~filters.regex("^/"))
+@app.on_message(
+    filters.text
+    & ~filters.regex("^/")
+    & ~filters.regex("^(📈 Top Movies|📊 Statistics|⭐ Favorites|⭐ Admin Panel|⬅ Back)$")
+)
 async def search(client, msg):
 
     # ignore messages without a user (channels, anonymous, etc.)
