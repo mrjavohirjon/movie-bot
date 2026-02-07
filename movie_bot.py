@@ -1,4 +1,3 @@
-
 from pyrogram import Client, filters
 from pymongo import MongoClient
 import time
@@ -24,7 +23,7 @@ req_col = db.requests
 
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8509897503:AAE54so0a3oUImP9psT_-3IpETGCogo_c-A"
+BOT_TOKEN = "5449865657:AAEgdcczHEhEg8L0s-KubKOjpi_U-vJF3xg"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
 MANDATORY_CHANNEL = "@TG_Manager_uz"
@@ -54,13 +53,13 @@ def join_btn():
 
 # ===== MENUS =====
 
-def user_menu(admin=False):
+def user_menu(is_admin=False):
     buttons = [
         [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
         [KeyboardButton("⭐ Favorites")]
     ]
 
-    if admin:
+    if is_admin:
         buttons.append([KeyboardButton("⭐ Admin Panel")])
 
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
