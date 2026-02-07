@@ -15,22 +15,6 @@ users_col = db.users
 fav_col = db.favorites
 req_col = db.requests
 
-#=======TIme======#
-
-print("🤖 Movie bot starting...")
-
-while True:
-    try:
-        app.run()
-    except FloodWait as e:
-        wait = int(e.value) + 5
-        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
-        time.sleep(wait)
-    except Exception as e:
-        print("❌ Fatal error:", e)
-        time.sleep(10000)
-
-
 # ===== CONFIG =====
 
 API_ID = 38119035
@@ -351,6 +335,18 @@ async def view_req(client, cb):
 
     await cb.message.edit_text(text, reply_markup=admin_menu())
 
+#======TIme======#
+
+while True:
+    try:
+        app.run()
+    except FloodWait as e:
+        wait = int(e.value) + 5
+        print(f"⏳ FloodWait at startup. Sleeping {wait} seconds")
+        time.sleep(wait)
+    except Exception as e:
+        print("❌ Fatal error:", e)
+        time.sleep(10000)
 
 # ===== RUN =====
 
