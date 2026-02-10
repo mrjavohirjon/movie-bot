@@ -4,8 +4,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 import time
 import asyncio
-from datetime import datetime, timezone
-datetime.now(timezone.utc)
 from pyrogram import idle
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
@@ -32,9 +30,28 @@ API_HASH = "0f84597433eacb749fd482ad238a104e"
 BOT_TOKEN = "5449865657:AAHm5lhjyYiieEdW1fpJTIde2D_daOlFJKc"
 
 MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
-MANDATORY_CHANNEL = "@TG_Manager_uz"
+#MANDATORY_CHANNELS = [
+#    "@TG_Manager_uz",          # public channel
+#    -1003852586881             # private channel ID
+#]
 
-ADMIN_IDS = [5014031582]
+#====Mandatory channael ID=====#
+
+MANDATORY_CHANNELS = [
+    {
+        "id": "@TG_Manager_uz",                # public channel
+        "name": "TG Manager",
+        "link": "https://t.me/TG_Manager_uz"
+    },
+    {
+        "id": "@hshhshshshdgegeuejje",                  # private channel ID
+        "name": "Zayafka 1",
+        "link": "https://t.me/hshhshshshdgegeuejje"   # private invite link
+    }
+]
+
+
+ADS = 7425056304
 
 
 # ==================
@@ -44,18 +61,67 @@ app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== JOIN CHECK =====
 
-async def joined(client, uid):
-    try:
-        m = await client.get_chat_member(MANDATORY_CHANNEL, uid)
-        return m.status not in ["left","kicked"]
-    except:
-        return False
+async def joined_all_channels(client, user_id):
+    for channel in MANDATORY_CHANNELS:
+        try:
+            member = await client.get_chat_member(channel, user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except:
+            return False
+    return True
 
 def join_btn():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{MANDATORY_CHANNEL[1:]}")],
-        [InlineKeyboardButton("✅ Check", callback_data="check")]
+    buttons = []
+
+    for channel in MANDATORY_CHANNELS:
+        if isinstance(channel, str):  # public channel
+            buttons.append([
+                InlineKeyboardButton(
+                    "📢 Join Channel",
+                    url=f"https://t.me/{channel[1:]}"
+                )
+            ])
+
+    buttons.append([
+        InlineKeyboardButton("✅ Check", callback_data="check")
     ])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+#====Missing Channel======#
+
+async def get_missing_channels(client, user_id):
+    missing = []
+
+    for ch in MANDATORY_CHANNELS:
+        try:
+            member = await client.get_chat_member(ch["id"], user_id)
+            if member.status in ("left", "kicked"):
+                missing.append(ch)
+        except:
+            missing.append(ch)
+
+    return missing
+
+def missing_channels_keyboard(missing_channels):
+    buttons = []
+
+    for ch in missing_channels:
+        buttons.append([
+            InlineKeyboardButton(
+                f"📢 Join {ch['name']}",
+                url=ch["link"]
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton("✅ Check", callback_data="check")
+    ])
+
+    return InlineKeyboardMarkup(buttons)
+
 
 #=======SEND WITH NAME=======#
 
@@ -72,10 +138,16 @@ async def force_join(client, msg):
     if not msg.from_user:
         return False
 
-    if not await joined(client, msg.from_user.id):
+    missing = await get_missing_channels(client, msg.from_user.id)
+
+    if missing:
+        text = "❌ You must join these channels first:\n\n"
+        for ch in missing:
+            text += f"• {ch['name']}\n"
+
         await msg.reply(
-            "⚠ You must join the channel to use this bot.",
-            reply_markup=join_btn()
+            text,
+            reply_markup=missing_channels_keyboard(missing)
         )
         return False
 
@@ -88,7 +160,8 @@ def user_menu():
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-            [KeyboardButton("⭐ Favorites")]
+            [KeyboardButton("⭐ Favorites")],
+            [KeyboardButton("📢 Advertising")]
         ],
         resize_keyboard=True
     )
@@ -136,19 +209,29 @@ async def start(client, msg):
 
 
 
-@app.on_callback_query(filters.regex("check"))
-async def check(client, cb):
+@app.on_callback_query(filters.regex("^check$"))
+async def check_join(client, cb):
+    missing = await get_missing_channels(client, cb.from_user.id)
 
-    if await joined(client, cb.from_user.id):
-        await cb.message.delete()
+    if missing:
+        await cb.answer("❌ You still haven't joined all channels!", show_alert=True)
+        return
 
-        fake_msg = cb.message
-        fake_msg.from_user = cb.from_user
+    await cb.message.delete()
+    await client.send_message(
+        cb.from_user.id,
+        "✅ Access granted! Welcome 🎉",
+        reply_markup=user_menu()
+    )
 
-        await send_welcome(client, fake_msg)
 
-    else:
-        await cb.answer("❌ Join channel first!", show_alert=True)
+#====ADVERTISING=====#
+
+@app.on_message(filters.text & filters.regex("^📢 Advertising$"))
+async def advertising_text(client, msg):
+    await msg.reply(
+        "📢 Reklama uchun bog‘laning:\n\n👉 @Mr_Javohirjon"
+    )
 
 
 # ===== SAVE MOVIE =====
@@ -176,12 +259,13 @@ async def save_movie(client, msg):
         ])
     )
 
+
 # ===== REMOVE =====
 
 @app.on_callback_query(filters.regex("^remove_"))
 async def remove_movie(client, cb):
 
-    if cb.from_user.id not in ADMIN_IDS:
+    if cb.from_user.id not in ADS:
         await cb.answer("Not allowed", show_alert=True)
         return
 
@@ -207,12 +291,12 @@ broadcast_wait=set()
 
 @app.on_callback_query(filters.regex("broadcast"))
 async def ask_broadcast(client,cb):
-    if cb.from_user.id not in ADMIN_IDS:
+    if cb.from_user.id not in ADS:
         return
     broadcast_wait.add(cb.from_user.id)
     await cb.message.edit_text("📢 Send text/image/video/file to broadcast (or /cancel)")
 
-@app.on_message(filters.user(ADMIN_IDS))
+@app.on_message(filters.user(ADS))
 async def handle_broadcast(client,msg):
 
     if msg.from_user.id not in broadcast_wait:
@@ -239,7 +323,9 @@ async def handle_broadcast(client,msg):
 @app.on_message(
     filters.text
     & ~filters.regex("^/")
-    & ~filters.regex("^(📈 Top Movies|📊 Statistics|⭐ Favorites|⭐ Admin Panel|⬅ Back)$")
+    & ~filters.regex(
+        "^(📈 Top Movies|📊 Statistics|⭐ Favorites|📥 Requests|⭐ Admin Panel|⬅ Back)$"
+    )
 )
 async def search(client, msg):
 
@@ -255,8 +341,10 @@ async def search(client, msg):
     movie = None
     if q.isdigit():
         movie = movies_col.find_one({"code": int(q)})
+        return
     else:
         movie = movies_col.find_one({"title": {"$regex": q, "$options": "i"}})
+        return
 
     if not movie:
         return
@@ -320,23 +408,16 @@ async def myfav_text(client, msg):
 
     await msg.reply(text)
 
-# ===== STATS =====
+#=====Statistics Format=====#
 
-@app.on_message(filters.text & filters.regex("^📊 Statistics$"))
-async def admin_stats(client, msg):
-
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-
+def build_statistics_text():
     now = datetime.utcnow()
     since = now - timedelta(days=1)
 
-    # totals
     total_users = users_col.count_documents({})
     total_movies = movies_col.count_documents({})
     total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
 
-    # daily
     daily_new_users = users_col.count_documents({
         "joined_at": {"$gte": since}
     })
@@ -345,8 +426,8 @@ async def admin_stats(client, msg):
         "last_download": {"$gte": since}
     })
 
-    text = (
-        "📊 **Daily & Total Statistics**\n\n"
+    return (
+        "📊 Statistics\n\n"
         f"👤 New users today: {daily_new_users}\n"
         f"⬇ Downloads today: {daily_downloads}\n\n"
         f"👥 Total users: {total_users}\n"
@@ -355,7 +436,24 @@ async def admin_stats(client, msg):
         f"⏰ Time: {now.strftime('%Y-%m-%d %H:%M')} UTC"
     )
 
-    await msg.reply(text)
+
+# ===== STATS =====
+
+@app.on_message(filters.text & filters.regex("^📊 Statistics$"))
+async def statistics_text(client, msg):
+
+    # force mandatory join
+    if not await force_join(client, msg):
+        return
+
+    # admin-only
+    if msg.from_user.id != ADS:
+        await msg.reply("⛔ This section is for admins only.")
+        return
+    
+    await msg.reply(
+        build_statistics_text()
+    )
 
 # ===== TOP (NAME + CODE ONLY) =====
 
@@ -403,32 +501,30 @@ async def request_movie(client, msg):
 
 @app.on_callback_query(filters.regex("admin"))
 async def admin_panel(client,cb):
-    if cb.from_user.id not in ADMIN_IDS: return
+    if cb.from_user.id not in ADS: return
     await cb.message.edit_text("⭐ Admin Panel",reply_markup=admin_menu())
 
 @app.on_callback_query(filters.regex("back"))
 async def back(client,cb):
-    await cb.message.edit_text("🎬 Menu",reply_markup=user_menu(cb.from_user.id in ADMIN_IDS))
+    await cb.message.edit_text("🎬 Menu",reply_markup=user_menu(cb.from_user.id in ADS))
 
 # ===== VIEW REQUESTS =====
 
-@app.on_callback_query(filters.regex("view_requests"))
-async def view_req(client, cb):
-
-    if cb.from_user.id not in ADMIN_IDS:
+@app.on_message(filters.text & filters.regex("^📥 Requests$"))
+async def admin_requests(client, msg):
+    if msg.from_user.id not in ADS:
         return
 
     reqs = list(req_col.find())
-
     if not reqs:
-        await cb.message.edit_text("No requests", reply_markup=admin_menu())
+        await msg.reply("No requests")
         return
 
     text = "📥 Requests:\n\n"
     for i, r in enumerate(reqs, 1):
         text += f"{i}. {r['name']}\n"
 
-    await cb.message.edit_text(text, reply_markup=admin_menu())
+    await msg.reply(text)
 
 #=====Daily_statistics======#
 
