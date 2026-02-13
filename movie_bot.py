@@ -21,8 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8509897503:AAE54so0a3oUImP9psT_-3IpETGCogo_c-A"
-# BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
+BOT_TOKEN = "8371879333:AAHh5CQrh-5f_3Rj1dpa2BLPVOZ4JwDoqCw"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -365,7 +364,7 @@ async def send_weekly_highlights():
     for i, m in enumerate(top_3, 1):
         # Nomi split qilinishini f-stringdan tashqariga chiqaramiz
         movie_title = m['title'].split('\n')[0] 
-        text += f"{i}. 🎬 <b>{movie_title}</b>\n🔑 Kod: <code>{m['code']}</code>\n\n"
+        text += f"{i}. <b>{movie_title}</b>\n🔑 Kod: <code>{m['code']}</code>\n\n"
     text += "🍿 <i>Kino kodini botga yuboring!</i>"
 
     # Hamma foydalanuvchilarga tarqatish
@@ -450,7 +449,7 @@ async def handle_movie_delivery(client, user_id, movie_code):
         return False
 
     # 2. O'zgaruvchilarni tayyorlash
-    caption_text = f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
+    caption_text = f" <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
     kb = movie_extra_kb(
         code=movie['code'], 
         is_admin=is_admin(user_id), 
@@ -1248,7 +1247,7 @@ async def handle_text(client, msg):
         if movie:
             user_id = msg.from_user.id
             # 1. Kinoni yuborish uchun kerakli ma'lumotlarni tayyorlaymiz
-            caption_text = f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
+            caption_text = f"<b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
             kb = movie_extra_kb(
                 code=movie['code'], 
                 is_admin=is_admin(user_id), 
