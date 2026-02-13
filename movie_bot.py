@@ -183,7 +183,7 @@ def get_config():
             "type": "bot_config",
             "mandatory_channels": [
                 {"id": "@TG_Manager_uz", "name": "✨ TG Manager Uz", "link": "https://t.me/TG_Manager_uz"},
-                {"id": "@hshhshshshdgegeuejje", "name": "🎬 Zayafka Kanali", "link": "https://t.me/hshhshshshdgegeuejje"}
+                {"id": "@TG_Manager_uz", "name": "🎬 Zayafka Kanali", "link": "https://t.me/hshhshshshdgegeuejje"}
             ],
             "main_admin": 5014031582, # Siz aytgan boshlang'ich ID
             "admin_ids": [] # Yordamchi adminlar hozircha bo'sh
