@@ -1,590 +1,1818 @@
-from pyrogram import Client, filters
-from pymongo import MongoClient
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timedelta
-import time
 import asyncio
-from pyrogram import idle
+import math
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from urllib.parse import quote
+from pyrogram.enums import ChatMemberStatus
+from pyrogram import Client, filters, idle
+from pyrogram.errors import MessageNotModified, UserNotParticipant, ChatAdminRequired
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    ReplyKeyboardMarkup, 
     KeyboardButton
 )
+from pymongo import MongoClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# ==========================================
+#                  CONFIG
+# ==========================================
+API_ID = 38119035
+API_HASH = "0f84597433eacb749fd482ad238a104e"
+BOT_TOKEN = "8371879333:AAHh5CQrh-5f_3Rj1dpa2BLPVOZ4JwDoqCw"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
+UZ_TZ = ZoneInfo("Asia/Tashkent")
+SAVED_MOVIE = -1003797574060
+# version 8 correct.txt fayliga qo'shimcha
+KINO1CHRA_CHANNEL = -1003897814741
+MAIN_CHANNEL = @KinoDrift
+SAVE_SHORTS = -1003822143783
+
+# BOTDA MAVJUD BO'LISHI KERAK BO'LGAN 11 TA JANR
+ALLOWED_GENRES = [
+    "jangari", "detektiv", "sarguzasht", "hujjatli", "tarixiy", 
+    "fantastik", "multfilm", "ujas", "drama", "komediya", "triller"
+]
+
+
+# ==========================================
+#              DATABASE SETUP
+# ==========================================
 mongo = MongoClient(MONGO_URL)
 db = mongo.moviebot
-
 movies_col = db.movies
 users_col = db.users
 fav_col = db.favorites
 req_col = db.requests
-
-# ===== CONFIG =====
-
-API_ID = 38119035
-API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "5449865657:AAHm5lhjyYiieEdW1fpJTIde2D_daOlFJKc"
-
-MOVIE_CHANNEL = "@hshhshshshdgegeuejje"
-#MANDATORY_CHANNELS = [
-#    "@TG_Manager_uz",          # public channel
-#    -1003852586881             # private channel ID
-#]
-
-#====Mandatory channael ID=====#
-
-MANDATORY_CHANNELS = [
-    {
-        "id": "@TG_Manager_uz",                # public channel
-        "name": "TG Manager",
-        "link": "https://t.me/TG_Manager_uz"
-    },
-    {
-        "id": "@hshhshshshdgegeuejje",                  # private channel ID
-        "name": "Zayafka 1",
-        "link": "https://t.me/hshhshshshdgegeuejje"   # private invite link
-    }
-]
-
-
-ADS = 7425056304
-
-
-# ==================
+ratings_col = db.ratings
+settings_col = db.settings  # Yangi sozlamalar kolleksiyasi
+requests_col = db.requests    # So'rovlar (Kelgan buyurtmalar) uchun
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+broadcast_wait = set()
+pending_broadcasts = {}
+request_wait = set()
+approve_wait = {} 
+channels_col = db["channels"]
 
 
-# ===== JOIN CHECK =====
+def is_admin(uid):
+    conf = get_config() # Har safar bazadan yangi adminlar ro'yxatini oladi
+    main_admin = conf.get("main_admin")
+    admin_ids = conf.get("admin_ids", [])
+    
+    # Agar main_admin ro'yxat bo'lsa (sizda [5014031582] ko'rinishida saqlangan)
+    if isinstance(main_admin, list):
+        return uid in main_admin or uid in admin_ids
+    return uid == main_admin or uid in admin_ids
 
-async def joined_all_channels(client, user_id):
-    for channel in MANDATORY_CHANNELS:
-        try:
-            member = await client.get_chat_member(channel, user_id)
-            if member.status in ["left", "kicked"]:
-                return False
-        except:
-            return False
-    return True
+def is_main_admin(uid):
+    """Faqat asosiy adminni tekshirish (Admin o'tkazish huquqiga ega bo'lgan shaxs)"""
+    conf = get_config()
+    main_admin = conf.get("main_admin")
+    
+    # Agar main_admin bazada list bo'lsa [5014031582]
+    if isinstance(main_admin, list):
+        return uid in main_admin
+    # Agar main_admin bazada bitta raqam bo'lsa 5014031582
+    return uid == main_admin
 
-def join_btn():
+# Vaqtinchalik xabarni saqlash uchun
+pending_broadcasts = {}
+
+def get_bot_config():
+    """Bazadan sozlamalarni yuklash, agar bo'sh bo'lsa standartlarini yaratish"""
+    config = settings_col.find_one({"id": "main_config"})
+    if not config:
+        # Baza bo'sh bo'lgan birinchi holatda yaratiladigan qiymatlar
+        default_data = {
+            "id": "main_config",
+            "bot_token": "TOKENDINGIZNI_YORDAMCHI_SIFATIDA_YOZING",
+            "admin_ids": [123456789, 987654321], # Adminlar
+            "mandatory_channels": ["@kanal1", "@kanal2"], # Kanallar
+        }
+        settings_col.insert_one(default_data)
+        return default_data
+    return config
+
+# ==========================================
+#           CHANNEL CONFIG
+# ==========================================
+
+config = get_bot_config()
+
+
+# ==========================================
+#               KEYBOARDS
+# ==========================================
+
+def user_menu(user_id):
+    buttons = [
+        [KeyboardButton("📂 Barcha Kinolar"), KeyboardButton("🎭 Janrlar")],
+        [KeyboardButton("📈 Top Kinolar"), KeyboardButton("📥 Kino so'rash")],
+        [KeyboardButton("⭐ Sevimlilar"), KeyboardButton("📊 Statistika")],
+        [KeyboardButton("🔗 Taklifnoma"), KeyboardButton("🏆 Leaderboard")],
+        [KeyboardButton("📢 Reklama")]
+    ]
+    if is_admin(user_id): 
+        buttons.append([KeyboardButton("⚙️ Admin Menu")])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+def genres_keyboard():
+    """11 ta janrni klaviaturada chiroyli chiqarish"""
     buttons = []
+    for i in range(0, len(ALLOWED_GENRES), 2):
+        row = [KeyboardButton(f"📁 {g.capitalize()}") for g in ALLOWED_GENRES[i:i+2]]
+        buttons.append(row)
+    buttons.append([KeyboardButton("⬅️ Orqaga")])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-    for channel in MANDATORY_CHANNELS:
-        if isinstance(channel, str):  # public channel
-            buttons.append([
-                InlineKeyboardButton(
-                    "📢 Join Channel",
-                    url=f"https://t.me/{channel[1:]}"
-                )
-            ])
-
-    buttons.append([
-        InlineKeyboardButton("✅ Check", callback_data="check")
-    ])
-
-    return InlineKeyboardMarkup(buttons)
-
-
-#====Missing Channel======#
-
-async def get_missing_channels(client, user_id):
-    missing = []
-
-    for ch in MANDATORY_CHANNELS:
-        try:
-            member = await client.get_chat_member(ch["id"], user_id)
-            if member.status in ("left", "kicked"):
-                missing.append(ch)
-        except:
-            missing.append(ch)
-
-    return missing
-
-def missing_channels_keyboard(missing_channels):
-    buttons = []
-
-    for ch in missing_channels:
-        buttons.append([
-            InlineKeyboardButton(
-                f"📢 Join {ch['name']}",
-                url=ch["link"]
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton("✅ Check", callback_data="check")
-    ])
-
-    return InlineKeyboardMarkup(buttons)
-
-
-#=======SEND WITH NAME=======#
-
-async def send_welcome(client, msg):
-    name = msg.from_user.first_name or "Do'stim"
-    await msg.reply(
-        f"👋 Assalomu alaykum {name} 🐾 botimizga xush kelibsiz.\n\n"
-        "✍🏻 Kino kodini yuboring."
-    )
-
-#=======JOIN FORCE=====#
-
-async def force_join(client, msg):
-    if not msg.from_user:
-        return False
-
-    missing = await get_missing_channels(client, msg.from_user.id)
-
-    if missing:
-        text = "❌ You must join these channels first:\n\n"
-        for ch in missing:
-            text += f"• {ch['name']}\n"
-
-        await msg.reply(
-            text,
-            reply_markup=missing_channels_keyboard(missing)
-        )
-        return False
-
-    return True
-
-
-# ===== MENUS =====
-
-def user_menu():
-    return ReplyKeyboardMarkup(
+def movie_extra_kb(code, is_admin=False, insta_link=None):
+    buttons = [
         [
-            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-            [KeyboardButton("⭐ Favorites")],
-            [KeyboardButton("📢 Advertising")]
-        ],
-        resize_keyboard=True
-    )
+            InlineKeyboardButton("⭐ 1", callback_data=f"rate_{code}_1"),
+            InlineKeyboardButton("⭐ 2", callback_data=f"rate_{code}_2"),
+            InlineKeyboardButton("⭐ 3", callback_data=f"rate_{code}_3"),
+            InlineKeyboardButton("⭐ 4", callback_data=f"rate_{code}_4"),
+            InlineKeyboardButton("⭐ 5", callback_data=f"rate_{code}_5")
+        ]
+    ]
+    
+    # Agar Instagram link bo'lsa, uni Sevimlilardan tepaga qo'shamiz
+    if insta_link:
+        buttons.append([InlineKeyboardButton("🎬 Kinodan parcha (Video)", url=insta_link)])
+        
+    buttons.append([InlineKeyboardButton("⭐ Sevimlilarga saqlash", callback_data=f"fav_{code}")])
+    
+    if is_admin:
+        buttons.append([InlineKeyboardButton("🗑 O'chirish (Admin)", callback_data=f"rm_{code}")])
+    return InlineKeyboardMarkup(buttons)
+
 
 def admin_menu():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📈 Top Movies"), KeyboardButton("📊 Statistics")],
-            [KeyboardButton("📥 Requests")],
-            [KeyboardButton("⬅ Back")]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("📊 Admin Panel"), KeyboardButton("📢 Xabar yuborish")],
+        [KeyboardButton("👤 Admin qo'shish"), KeyboardButton("👤 Admin o'chirish")],
+        [KeyboardButton("➕ Kanal qo'shish"), KeyboardButton("➖ Kanal o'chirish")],
+        [KeyboardButton("🎬 Kino kanalni sozlash"), KeyboardButton("👑 Adminlikni o'tkazish")],
+        [KeyboardButton("📥 Kelgan So'rovlar"), KeyboardButton("🗑 So'rovlarni tozalash")],
+        [KeyboardButton("👤 User Menu ga qaytish")]
+    ], resize_keyboard=True)
 
-# ===== START =====
-
-@app.on_message(filters.command("start"))
-async def start(client, msg):
-
-    # Force join check
-    if not await force_join(client, msg):
-        return
-
-    # Save user if not exists
-    users_col.update_one(
-        {"user_id": msg.from_user.id},
-        {
-            "$setOnInsert": {
-                "user_id": msg.from_user.id,
-                "joined_at": datetime.utcnow()
-            }
-        },
-        upsert=True
-    )
-
-    # User name
-    name = msg.from_user.first_name or "Do'stim"
-
-    # Send welcome message + keyboard (ONLY ONE reply)
-    await msg.reply(
-        f"👋 Assalomu alaykum {name} 🐾 botimizga xush kelibsiz.\n\n"
-        "✍🏻 Kino kodini yuboring.",
-        reply_markup=user_menu()
-    )
+def cancel_menu():
+    return ReplyKeyboardMarkup([[KeyboardButton("❌ Bekor qilish")]], resize_keyboard=True)
 
 
-
-@app.on_callback_query(filters.regex("^check$"))
-async def check_join(client, cb):
-    missing = await get_missing_channels(client, cb.from_user.id)
-
-    if missing:
-        await cb.answer("❌ You still haven't joined all channels!", show_alert=True)
-        return
-
-    await cb.message.delete()
-    await client.send_message(
-        cb.from_user.id,
-        "✅ Access granted! Welcome 🎉",
-        reply_markup=user_menu()
-    )
+# ==========================================
+#                SETTINGS
+# ==========================================
 
 
-#====ADVERTISING=====#
+def get_config():
+    """
+    MongoDB dan bot sozlamalarini yuklash.
+    Agar baza bo'sh bo'lsa, 5014031582 ID-sini asosiy admin sifatida saqlaydi.
+    """
+    config = db.settings.find_one({"type": "bot_config"})
+    if not config:
+        # Baza birinchi marta ishga tushganda yaratiladigan ma'lumotlar
+        default_data = {
+            "type": "bot_config",
+            "mandatory_channels": [
+                {"id": "@TG_Manager_uz", "name": "✨ TG Manager Uz", "link": "https://t.me/TG_Manager_uz"},
+                {"id": "@hshhshshshdgegeuejje", "name": "🎬 Zayafka Kanali", "link": "https://t.me/hshhshshshdgegeuejje"}
+            ],
+            "main_admin": 5014031582, # Siz aytgan boshlang'ich ID
+            "admin_ids": [] # Yordamchi adminlar hozircha bo'sh
+        }
+        db.settings.insert_one(default_data)
+        return default_data
+    return config
 
-@app.on_message(filters.text & filters.regex("^📢 Advertising$"))
-async def advertising_text(client, msg):
-    await msg.reply(
-        "📢 Reklama uchun bog‘laning:\n\n👉 @Mr_Javohirjon"
-    )
-
-
-# ===== SAVE MOVIE =====
-
-@app.on_message(filters.video & filters.chat(MOVIE_CHANNEL))
-async def save_movie(client, msg):
-
-    last = movies_col.find_one(sort=[("code", -1)])
-    code = 1 if not last else last["code"] + 1
-
-    title = msg.caption or f"Movie {code}"
-
-    movies_col.insert_one({
-        "code": code,
-        "file_id": msg.video.file_id,
-        "title": title,
-        "downloads": 0,
-        "msg_id": msg.id
-    })
-
-    await msg.reply(
-        f"✅ Saved!\n🎬 Code: {code}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Remove Movie", callback_data=f"remove_{code}")]
-        ])
-    )
+def admin_settings_menu():
+    return ReplyKeyboardMarkup([
+        ["➕ Kanal qo'shish", "➖ Kanal o'chirish"],
+        ["📋 Kanallar ro'yxati", "👤 Admin qo'shish"],
+        ["⬅️ Orqaga"]
+    ], resize_keyboard=True)
 
 
-# ===== REMOVE =====
+# ==========================================
+#                HELPERS
+# ==========================================
 
-@app.on_callback_query(filters.regex("^remove_"))
-async def remove_movie(client, cb):
+async def check_force_join(client, msg):
+    uid = msg.from_user.id
 
-    if cb.from_user.id not in ADS:
-        await cb.answer("Not allowed", show_alert=True)
-        return
+    # 1. ADMIN VA VIP TEKSHIRUVI (Imtiyozli foydalanuvchilar)
+    if is_admin(uid):
+        return True
+        
+    user_db_data = users_col.find_one({"user_id": uid})
+    if user_db_data and user_db_data.get("is_vip", False):
+        return True
 
-    code = int(cb.data.split("_")[1])
+    # 2. SOZLAMALAR VA SO'ROVLARNI YUKLASH
+    conf = get_config()
+    channels = conf.get("mandatory_channels", [])
+    
+    # Bazadan ushbu user yuborgan pending (kutilayotgan) so'rovlarni olamiz
+    req_data = requests_col.find_one({"user_id": uid})
+    pending_list = req_data.get("pending_channels", []) if req_data else []
 
-    movie = movies_col.find_one({"code": code})
-    if not movie:
-        await cb.answer("Already removed", show_alert=True)
-        return
+    unsubscribed = []
 
+    # 3. KANALLARNI TEKSHIRISH SIKLI
+    for chan in channels:
+        chan_id_str = str(chan["id"])
+        
+        # a) Bazadagi "Join Request" (Pending) yuborilganligini tekshirish
+        if chan_id_str in pending_list:
+            continue # So'rov yuborilgan bo'lsa, bu kanalni o'tkazib yuboramiz
+
+        # b) Haqiqiy a'zolikni API orqali tekshirish
+        try:
+            member = await client.get_chat_member(chan["id"], uid)
+            # Agar foydalanuvchi a'zo, admin yoki ega bo'lsa - o'tkazamiz
+            if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                continue
+            else:
+                unsubscribed.append(chan)
+        except Exception:
+            # User a'zo emas, so'rov yubormagan yoki bot kanalda admin emas
+            unsubscribed.append(chan)
+
+    # 4. NATIJANI QAYTARISH VA TUGMALARNI TARTIB BILAN CHIQARISH
+    if unsubscribed:
+        buttons = []
+        # Tartib raqami bilan (1-kanal, 2-kanal...) tugmalarni yasaymiz
+        for index, ch in enumerate(unsubscribed, start=1):
+            buttons.append([InlineKeyboardButton(text=f"{index}-kanal", url=ch['link'])])
+        
+        buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check")])
+        
+        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling yoki so'rov yuboring:"
+        
+        # Callback (tugma) yoki oddiy xabar ekanligini aniqlaymiz
+        target = msg.message if hasattr(msg, "data") else msg
+        
+        if hasattr(msg, "data"):
+            try:
+                await target.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+            except MessageNotModified:
+                # Agar o'zgarish bo'lmasa (hali a'zo bo'lmagan bo'lsa) alert chiqaramiz
+                await msg.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz yoki so'rov yubormadingiz!", show_alert=True)
+            except Exception as e:
+                print(f"Edit xatosi: {e}")
+        else:
+            await target.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+        
+        return False
+
+    return True
+
+def get_movie_list(page=1, genre=None):
+    """Faqat birinchi qator va kodni ko'rsatish mantiqi"""
+    items_per_page = 10
+    query = {"genres": genre} if genre else {}
+    total_movies = movies_col.count_documents(query)
+    
+    if total_movies == 0:
+        return "😔 Hozircha bazada kinolar yo'q.", None
+    
+    total_pages = math.ceil(total_movies / items_per_page)
+    movies = list(movies_col.find(query).skip((page - 1) * items_per_page).limit(items_per_page))
+    
+    text = f"🎬 <b>Kinolar ro'yxati:</b>\n"
+    if genre:
+        text += f"📂 Janr: #{genre}\n"
+    text += "─────────────────\n\n"
+    
+    for m in movies:
+        # RASMDA KO'RSATILGANDEK: Birinchi qatorni ajratish
+        title_line = m['title'].split('\n')[0]
+        text += f"🎬 {title_line}\n🔑 FILM KODI: <code>{m['code']}</code>\n\n"
+        
+    buttons = []
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"page_{page-1}_{genre or ''}"))
+    nav_row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="ignore"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("➡️", callback_data=f"page_{page+1}_{genre or ''}"))
+    buttons.append(nav_row)
+    
+    return text, InlineKeyboardMarkup(buttons)
+
+
+# ==========================================
+#          WEEKLY MAINTENANCE FUNCTIONS
+# ==========================================
+
+async def update_weekly_vip_winners():
+    """VIP g'oliblarni yangilash va xabardor qilish"""
+    print("Haftalik VIP yangilanishi boshlandi...")
+    
+    # 1. Eski VIP-larni aniqlash (Adminlar emas)
+    old_vips = [u["user_id"] for u in users_col.find({"is_vip": True, "user_id": {"$nin": is_admin(u_id)}})]
+    
+    # 2. Hammani VIP-dan tushirish
+    users_col.update_many({"user_id": {"$nin": is_admin(u_id)}}, {"$set": {"is_vip": False}})
+    
+    # 3. Yangi TOP 10 ni topish (kamida 5 ta referal)
+    new_top_10 = list(users_col.find({"referrals": {"$gte": 5}}).sort("referrals", -1).limit(10))
+    new_vip_ids = [u["user_id"] for u in new_top_10]
+    
+    # 4. Yangi g'oliblarni VIP qilish va tabriklash
+    for user in new_top_10:
+        u_id = user["user_id"]
+        users_col.update_one({"user_id": u_id}, {"$set": {"is_vip": True}})
+        try:
+            await app.send_message(
+                u_id, 
+                "🎉 <b>TABRIKLAYMIZ!</b>\n\nSiz haftalik TOP 10 talikka kirdingiz va <b>VIP status</b> oldingiz! "
+                "1 hafta davomida majburiy obunalarsiz botdan foydalana olasiz. 💪"
+            )
+        except: continue
+
+    # 5. Ro'yxatdan tushganlarga xabar yuborish
+    # MUHIM: old_vip_ids o'rniga yuqoridagi ro'yxat nomini (old_vips) ishlating
+    for old_id in old_vips:
+        if old_id not in new_vip_ids:
+            try:
+                await app.send_message(
+                    chat_id=old_id, 
+                    text="😔 <b>VIP status muddati tugadi.</b>\n\nBu hafta TOP 10 talikka kira olmadingiz. "
+                         "VIP imtiyozlari to'xtatildi. Keyingi hafta yaxshiraq harakat qiling! 🚀"
+                )
+            except Exception as e:
+                print(f"Xabar yuborishda xato (ID: {old_id}): {e}")
+                continue
+
+async def send_weekly_highlights():
+    """Haftaning eng mashhur kinolarini yuborish"""
+    print("Haftalik tavsiyanoma yuborilmoqda...")
+    
+    top_3 = list(movies_col.find().sort([("weekly_downloads", -1), ("avg_rating", -1)]).limit(3))
+    if not top_3: return
+
+    text = "🌟 <b>HAFTA TAVSIYASI</b>\n______________________________________\n\n"
+    text += "🔥 Ushbu haftaning eng mashhur kinolari:\n\n"
+    for i, m in enumerate(top_3, 1):
+        # Nomi split qilinishini f-stringdan tashqariga chiqaramiz
+        movie_title = m['title'].split('\n')[0] 
+        text += f"{i}. 🎬 <b>{movie_title}</b>\n🔑 Kod: <code>{m['code']}</code>\n\n"
+    text += "🍿 <i>Kino kodini botga yuboring!</i>"
+
+    # Hamma foydalanuvchilarga tarqatish
+    async for user in users_col.find():
+        try:
+            await app.send_message(user["user_id"], text)
+            await asyncio.sleep(0.05)
+        except: continue
+
+    # Haftalik yuklashlar sonini nolga tushirish
+    movies_col.update_many({}, {"$set": {"weekly_downloads": 0}})
+
+
+# ==========================================
+#               SCHEDULER
+# ==========================================
+
+async def send_daily_stats_to_channel():
+    now = datetime.now(UZ_TZ)
+    total_u = users_col.count_documents({})
+    total_m = movies_col.count_documents({})
+    stats_text = f"📊 Kunlik Statistika\n\n👤 Userlar: {total_u}\n🎬 Kinolar: {total_m}\n⏰ {now.strftime('%Y-%m-%d %H:%M')}"
     try:
-        await client.delete_messages(MOVIE_CHANNEL, movie["msg_id"])
+        await app.send_message(chat_id=SAVED_MOVIE, text=stats_text)
     except:
         pass
 
-    movies_col.delete_one({"code": code})
+scheduler = AsyncIOScheduler(timezone="Asia/Tashkent")
+scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 
-    await cb.message.edit_text("🗑 Movie removed")
 
-# ===== BROADCAST =====
+# --- MAJBURIY OBUNA FUNKSIYALARI ---
 
-broadcast_wait=set()
+# ==========================================
+#      YAGONA MAJBURIY OBUNA TIZIMI
+# ==========================================
 
-@app.on_callback_query(filters.regex("broadcast"))
-async def ask_broadcast(client,cb):
-    if cb.from_user.id not in ADS:
-        return
-    broadcast_wait.add(cb.from_user.id)
-    await cb.message.edit_text("📢 Send text/image/video/file to broadcast (or /cancel)")
-
-@app.on_message(filters.user(ADS))
-async def handle_broadcast(client,msg):
-
-    if msg.from_user.id not in broadcast_wait:
-        return
-
-    if msg.text and msg.text.lower()=="/cancel":
-        broadcast_wait.remove(msg.from_user.id)
-        await msg.reply("❌ Broadcast cancelled")
-        return
-
-    users = load(USERS_FILE)
-
-    for u in users:
+async def check_subscription(client, user_id):
+    """Foydalanuvchi bazadagi barcha majburiy kanallarga a'zomi?"""
+    # Bazadan barcha qo'shilgan kanallarni olamiz
+    mandatory_channels = channels_col.find()
+    
+    for channel in mandatory_channels:
         try:
-            await msg.copy(u)
+            member = await client.get_chat_member(channel['chat_id'], user_id)
+            # Agar foydalanuvchi chiqib ketgan bo'lsa yoki haydalgan bo'lsa
+            if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
+                return False
+        except Exception:
+            # Agar bot kanalni topolmasa yoki admin bo'lmasa, uni o'tkazib yubormaymiz
+            return False
+    return True
+
+
+async def get_sub_keyboard(client, user_id):
+    """Obuna bo'lmaganlar uchun bazadagi kanallardan tugma yasash"""
+    keyboard = []
+    for channel in channels_col.find():
+        try:
+            # Har bir kanal uchun alohida tugma
+            keyboard.append([
+                InlineKeyboardButton("📢 Kanalga a'zo bo'lish", url=channel['invite_link'])
+            ])
         except:
-            pass
+            continue
+    
+    keyboard.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_sub")])
+    return InlineKeyboardMarkup(keyboard)
 
-    broadcast_wait.remove(msg.from_user.id)
-    await msg.reply("✅ Broadcast sent!")
+async def handle_movie_delivery(client, user_id, movie_code):
+    """Kinoni qidirish va yuborish (Tugmalar bilan)"""
+    movie = movies_col.find_one({
+        "$or": [
+            {"code": movie_code},
+            {"code": int(movie_code) if str(movie_code).isdigit() else None}
+        ]
+    })
+    
+    if movie:
+        # Tugmalarni yasash (Insta link bo'lsa parcha tugmasi ham chiqadi)
+        kb = movie_extra_kb(
+            code=movie['code'], 
+            is_admin=is_admin(user_id), 
+            insta_link=movie.get('insta_link')
+        )
+        
+        await client.send_video(
+            chat_id=user_id,
+            video=movie['file_id'],
+            caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>",
+            reply_markup=kb # Tugmalar shu yerda qo'shiladi
+        )
+        movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
+        return True
+    return False
 
-# ===== SEARCH =====
+# ==========================================
+#               INSTAGRAM LINK
+# ==========================================
 
-@app.on_message(
-    filters.text
-    & ~filters.regex("^/")
-    & ~filters.regex(
-        "^(📈 Top Movies|📊 Statistics|⭐ Favorites|📥 Requests|⭐ Admin Panel|⬅ Back)$"
+
+@app.on_message(filters.text & filters.chat(SAVED_MOVIE))
+async def save_insta_link(client, msg):
+    # Agar xabar biror videoga reply qilib yozilgan bo'lsa
+    if msg.reply_to_message and msg.reply_to_message.video:
+        link = msg.text
+        if "instagram.com" in link:
+            # O'sha videoning file_id si orqali bazadan topamiz
+            video_file_id = msg.reply_to_message.video.file_id
+            movies_col.update_one(
+                {"file_id": video_file_id},
+                {"$set": {"insta_link": link}}
+            )
+            await msg.reply("🔗 Instagram havola ushbu kinoga biriktirildi!")
+
+
+
+def movie_found_kb(user_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Topildi", callback_data=f"found_{user_id}")]
+    ])
+
+@app.on_message(filters.command("start") & filters.private)
+async def on_start(client, msg):
+    user_id = msg.from_user.id
+
+    if not await check_force_join(client, msg):
+        return
+    
+    # 1. OBUNA TEKSHIRUVI (Har doim birinchi!)
+    if not await check_subscription(client, user_id):
+        return await msg.reply_text(
+            "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
+            reply_markup=await get_sub_keyboard(client, user_id)
+        )
+
+    # 2. DEEP LINK TEKSHIRUVI (?start=33 bo'lib kelsa)
+    if len(msg.command) > 1:
+        movie_code = msg.command[1]
+        if await handle_movie_delivery(client, user_id, movie_code):
+            return # Kino yuborildi, funksiya tugadi
+
+    # 3. ODDIY START (Hech qanday kodsiz kirsa)
+    await msg.reply_text(
+        f"Assalomu alaykum {msg.from_user.first_name} !\n\nKino kodini yuboring yoki menyudan foydalaning:",
+        reply_markup=user_menu(user_id)
     )
-)
-async def search(client, msg):
 
-    if not await force_join(client, msg):
-        return
+# 1. Kanalga video tashlanganda
+@app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
+async def on_movie_upload(client, msg):
+    await msg.reply_text(
+        f"✅ <b>Kino yuklandi!</b> (ID: {msg.id})\n\n"
+        "Endi ushbu xabarga <b>Reply</b> qilib, foydalanuvchi ID-sini yuboring."
+    )
 
-    # ignore messages without a user (channels, anonymous, etc.)
-    if not msg.from_user:
-        return
+# 2. Admin ID yozib reply qilganda
+@app.on_message(filters.chat(KINO1CHRA_CHANNEL) & filters.reply)
+async def handle_admin_id_reply(client, msg):
+    # Agar xabar faqat raqamlardan iborat bo'lsa
+    if msg.text and msg.text.strip().isdigit():
+        user_id = int(msg.text.strip())
+        
+        # Kinoning asl xabar ID-sini aniqlash
+        # msg.reply_to_message - bu botning "Kino yuklandi" degan xabari
+        # msg.reply_to_message.reply_to_message_id - bu haqiqiy kinoning ID-si
+        
+        movie_id = None
+        if msg.reply_to_message.reply_to_message:
+            movie_id = msg.reply_to_message.reply_to_message.id
+        elif msg.reply_to_message.video or msg.reply_to_message.document:
+            movie_id = msg.reply_to_message.id
 
-    q = msg.text.lower().strip()
+        if movie_id:
+            # Callback_data ichiga foydalanuvchi ID va kino ID joylanadi
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Topildi (Yuborish)", callback_data=f"sendv_{user_id}_{movie_id}")]
+            ])
+            
+            await msg.reply_text(
+                f"👤 Foydalanuvchi: <code>{user_id}</code>\n"
+                f"🎬 Kino ID: <code>{movie_id}</code>\n\n"
+                "Yuborish uchun pastdagi tugmani bosing:",
+                reply_markup=keyboard
+            )
+        else:
+            await msg.reply_text("❌ Xato: Kino xabarini topa olmadim. Iltimos, botning xabariga reply qilib ID yuboring.")
 
-    movie = None
-    if q.isdigit():
-        movie = movies_col.find_one({"code": int(q)})
-        return
+# 3. Tugma bosilganda ishlash
+@app.on_callback_query(filters.regex(r"^sendv_(\d+)_(\d+)"))
+async def send_movie_final(client, cb):
+    data = cb.data.split("_")
+    user_id = int(data[1])
+    movie_id = int(data[2])
+    
+    try:
+        # Kinoni kanal ID va xabar ID orqali to'g'ridan-to'g'ri nusxalash
+        await client.copy_message(
+            chat_id=user_id,
+            from_chat_id=KINO1CHRA_CHANNEL,
+            message_id=movie_id
+        )
+        
+        # Foydalanuvchiga xabar
+        await client.send_message(
+            chat_id=user_id,
+            text="🎬 <b>Siz so'ragan kinoyingiz botimizga yuklandi!</b>\n\nMarhamat, tomosha qilishingiz mumkin."
+        )
+        
+        await cb.message.edit_text(f"✅ Muvaffaqiyatli yuborildi!\n👤 Foydalanuvchi: {user_id}")
+        await cb.answer("Yuborildi!", show_alert=True)
+
+    except Exception as e:
+        await cb.answer(f"Xatolik: {str(e)}", show_alert=True)
+
+@app.on_callback_query(filters.regex("check_sub")) # Sizda check_cb bo'lishi ham mumkin
+async def on_check_sub(client, query):
+    user_id = query.from_user.id
+    
+    # Obunani tekshiramiz
+    if await check_subscription(client, user_id):
+        # ✅ OBUNA BO'LGAN BO'LSA:
+        await query.message.delete() # Obuna so'ralgan xabarni o'chiramiz
+        
+        # Diqqat: Bu yerda start(client, query) deb chaqirmang! 
+        # Chunki query ob'ektida .command yo'q.
+        # Buning o'rniga shunchaki menyuni chiqaramiz:
+        await query.message.reply_text(
+            "✅ Obuna tasdiqlandi! Endi botdan foydalanishingiz mumkin.\n"
+            "Kino kodini yuboring yoki Menyudan Foydalaning",
+            reply_markup=user_menu(user_id)
+        )
     else:
-        movie = movies_col.find_one({"title": {"$regex": q, "$options": "i"}})
-        return
+        # ❌ OBUNA BO'LMAGAN BO'LSA:
+        await query.answer(
+            "⚠️ Siz hali hamma kanallarga a'zo emassiz!", 
+            show_alert=True
+        )
 
+# ==========================================
+#               HANDLERS
+# ==========================================
+
+@app.on_message(filters.command("start"))
+async def start(client, msg):
+    user = msg.from_user
+    if not await check_force_join(client, msg):
+        return
+    
+    # VIP Referral System
+    if len(msg.command) > 1 and msg.command[1].isdigit():
+        ref_id = int(msg.command[1])
+        if ref_id != user.id and not users_col.find_one({"user_id": user.id}):
+            users_col.update_one({"user_id": ref_id}, {"$inc": {"referrals": 1}})
+            try:
+                await client.send_message(ref_id, "🎉 Do'stingiz qo'shildi! Sizga 1 ta so'rov imkoniyati berildi.")
+            except:
+                pass
+
+    users_col.update_one(
+        {"user_id": user.id},
+        {"$set": {"last_active": datetime.utcnow()},
+         "$setOnInsert": {"joined_at": datetime.utcnow(), "referrals": 0}},
+        upsert=True
+    )
+    await msg.reply(f"👋 <b>Assalomu alaykum {user.first_name}!</b>\n\nKino kodini yuboring yoki quyidagi Menyudan foydalaning.", reply_markup=user_menu(user.id))
+
+
+@app.on_callback_query(filters.regex("^check$"))
+async def check_cb(client, cb):
+    user_id = cb.from_user.id
+    
+    # 1. Obunani tekshiramiz
+    if await check_force_join(client, cb):
+        # ✅ Agar obuna bo'lgan bo'lsa
+        await cb.message.delete() # Obuna so'ralgan xabarni o'chiramiz
+        
+        # ⚠️ DIQQAT: start(client, cb) deb chaqirmaymiz!
+        # Buning o'rniga foydalanuvchiga menyuni chiqaramiz:
+        await client.send_message(
+            chat_id=user_id,
+            text=f"Xush kelibsiz, {cb.from_user.first_name}!\n\n Film kodini yuboring:",
+            reply_markup=user_menu(user_id) # O'zingizning menyu funksiyangiz
+        )
+    else:
+        # ❌ Agar hali ham obuna bo'lmagan bo'lsa
+        # check_force_join funksiyasi allaqachon "A'zo bo'ling" xabarini chiqargan bo'ladi
+        # Shuning uchun bu yerda shunchaki alert chiqarish kifoya
+        await cb.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz!", show_alert=True)
+
+@app.on_callback_query(filters.regex("^rate_"))
+async def rate_movie_cb(client, cb):
+    _, code, stars = cb.data.split("_")
+    code, stars = int(code), int(stars)
+    ratings_col.update_one({"user_id": cb.from_user.id, "movie_code": code}, {"$set": {"stars": stars}}, upsert=True)
+    
+    all_r = list(ratings_col.find({"movie_code": code}))
+    avg = sum(r['stars'] for r in all_r) / len(all_r)
+    movies_col.update_one({"code": code}, {"$set": {"avg_rating": avg}})
+    await cb.answer(f"Rahmat! {stars} yulduz qabul qilindi.", show_alert=True)
+
+@app.on_callback_query(filters.regex("^page_"))
+async def page_cb(client, cb):
+    data = cb.data.split("_")
+    p = int(data[1])
+    g = data[2] if len(data) > 2 and data[2] != "" else None
+    t, m = get_movie_list(p, g)
+    await cb.message.edit_text(t, reply_markup=m)
+
+@app.on_callback_query(filters.regex(r"^found_(\d+)"))
+async def movie_found_callback(client, cb):
+    user_id = int(cb.data.split("_")[1])
+    
+    # 1. Admin reply qilgan original xabarni (kinoni) topamiz
+    # cb.message - "Foydalanuvchi ID..." xabari
+    # cb.message.reply_to_message - Admin yozgan ID xabari
+    # cb.message.reply_to_message.reply_to_message - Haqiqiy kino (Video/Fayl)
+    
+    try:
+        admin_id_msg = cb.message.reply_to_message
+        movie_msg = admin_id_msg.reply_to_message
+        
+        if movie_msg:
+            # Kinoni faqat so'ragan foydalanuvchiga yuborish
+            await movie_msg.copy(chat_id=user_id)
+            
+            # Xabar yuborish
+            await client.send_message(
+                chat_id=user_id,
+                text="✅ <b>Siz so'ragan kinoyingiz botimizga yuklandi!</b>"
+            )
+            
+            await cb.message.edit_text(f"✅ Kino {user_id} ga yuborildi va foydalanuvchi ogohlantirildi.")
+        else:
+            await cb.answer("Xato: Kino fayli topilmadi!", show_alert=True)
+            
+    except Exception as e:
+        await cb.answer(f"Xatolik: {str(e)}", show_alert=True)
+
+@app.on_callback_query(filters.regex(r"^star_(\d+)_(\d+)"))
+async def handle_star_rating(client, cb):
+    # Callback ma'lumotlarini ajratib olish
+    _, stars, code = cb.data.split("_")
+    stars = int(stars)
+    code = int(code)
+    
+    movie = movies_col.find_one({"code": code})
     if not movie:
-        return
+        return await cb.answer("Kino topilmadi!", show_alert=True)
 
-    await client.send_video(
-        msg.chat.id,
-        movie["file_id"],
-        caption=f"🎬 {movie['title']}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⭐ Add Favorite", callback_data=f"fav_{movie['code']}")]
-        ])
-    )
+    # Yangi reytingni hisoblash
+    new_votes = movie.get("votes_count", 0) + 1
+    new_total = movie.get("total_stars", 0) + stars
+    new_avg = round(new_total / new_votes, 1)
 
+    # Bazani yangilash
     movies_col.update_one(
-        {"code": movie["code"]},
-        {
-            "$inc": {"downloads": 1},
-            "$set": {"last_download": datetime.utcnow()}
-        }
+        {"code": code},
+        {"$set": {"votes_count": new_votes, "total_stars": new_total, "rating": new_avg}}
     )
 
+    # Xabar matnini yangilash
+    current_caption = cb.message.caption if cb.message.caption else cb.message.text
+    # Oxirgi qatorni (reyting qatorini) yangisiga almashtirish
+    lines = current_caption.split('\n')
+    if "📊 Reyting:" in lines[-1]:
+        lines[-1] = f"📊 <b>Reyting:</b> {new_avg} ({new_votes} ta ovoz)"
+    else:
+        lines.append(f"📊 <b>Reyting:</b> {new_avg} ({new_votes} ta ovoz)")
+    
+    updated_text = "\n".join(lines)
 
-# ===== FAVORITES =====
+    try:
+        await cb.edit_message_text(updated_text, reply_markup=cb.message.reply_markup)
+        await cb.answer(f"Siz {stars} yulduz berdingiz!")
+    except Exception:
+        # Agar matn rasm/video caption bo'lsa edit_message_caption ishlatish kerak
+        try:
+            await cb.edit_message_caption(updated_text, reply_markup=cb.message.reply_markup)
+            await cb.answer(f"Siz {stars} yulduz berdingiz!")
+        except:
+            await cb.answer("Ovozingiz saqlandi!")
 
 @app.on_callback_query(filters.regex("^fav_"))
-async def add_fav(client, cb):
-
-    if not await joined(client, cb.from_user.id):
-        await cb.answer("⚠ Join the channel first", show_alert=True)
-        return
-
+async def add_fav_callback(client, cb):
     code = int(cb.data.split("_")[1])
-    uid = cb.from_user.id
+    fav_col.update_one({"user_id": cb.from_user.id}, {"$addToSet": {"movies": code}}, upsert=True)
+    await cb.answer("⭐ Sevimlilar ro'yxatiga qo'shildi!")
 
-    fav_col.update_one(
-        {"user_id": uid},
-        {"$addToSet": {"movies": code}},
+@app.on_callback_query(filters.regex("^rm_"))
+async def rm_cb(client, cb):
+    # Foydalanuvchi admin ekanligini tekshirish
+    if is_admin(cb.from_user.id):
+        try:
+            # Kodni ajratib olish va o'chirish
+            code_str = cb.data.split("_")[1]
+            code = int(code_str) if code_str.isdigit() else code_str
+            
+            result = movies_col.delete_one({"code": code})
+            
+            if result.deleted_count > 0:
+                await cb.message.edit_text(f"🗑 Kino (Kod: {code}) bazadan muvaffaqiyatli o'chirildi.")
+            else:
+                await cb.answer("❌ Bu kodli kino bazada topilmadi.", show_alert=True)
+                
+        except Exception as e:
+            await cb.answer(f"❌ Xatolik yuz berdi: {e}", show_alert=True)
+    else:
+        await cb.answer("🚫 Bu amal faqat adminlar uchun!", show_alert=True)
+
+@app.on_callback_query(filters.regex("^approve_"))
+async def approve_cb(client, cb):
+    if is_admin(cb.from_user.id):
+        data = cb.data.split("_")
+        uid, req_name = int(data[1]), "_".join(data[2:])
+        
+        try:
+            
+            # So'rovni o'chirish
+            req_col.delete_one({"user_id": uid, "name": req_name})
+            await cb.message.edit_text(f"✅ '{req_name}' topildi deb belgilandi va xabar yuborildi.")
+            
+        except Exception as e:
+            await cb.answer(f"Xato: {e}", show_alert=True)
+
+@app.on_callback_query(filters.regex("^notfound_"))
+async def not_found_cb(client, cb):
+    if is_admin(cb.from_user.id):
+        data = cb.data.split("_")
+        uid, req_name = int(data[1]), "_".join(data[2:])
+        
+        try:
+            # Limitni qaytarish (referral +1)
+            users_col.update_one({"user_id": uid}, {"$inc": {"referrals": 1}})
+            
+            # Userga xabar
+            await client.send_message(
+                chat_id=uid,
+                text=f"😔 <b>Uzur, siz so'ragan '{req_name}' kinosini topa olmadik.</b>\n\n"
+                     f"Sizga boshqa kino so'rash uchun qaytadan imkoniyat berildi. "
+                     f"Bemalol boshqa film so'rashingiz mumkin! 🚀"
+            )
+            # So'rovni o'chirish
+            req_col.delete_one({"user_id": uid, "name": req_name})
+            await cb.message.edit_text(f"❌ '{req_name}' topilmadi. Limit qaytarildi.")
+            
+        except Exception as e:
+            await cb.answer(f"Xato: {e}", show_alert=True)
+            
+
+@app.on_callback_query()
+async def callback_handler(client, callback_query):
+    data = callback_query.data
+    uid = callback_query.from_user.id
+
+    if not is_admin(uid):
+        return await callback_query.answer("Siz admin emassiz!", show_alert=True)
+
+    if data == "confirm_clear_requests":
+        # Bazadagi barcha so'rovlarni (requests) o'chirish
+        # Eslatma: requests_col bu sizning so'rovlar saqlanadigan kolleksiyangiz nomi
+        requests_col.delete_many({}) 
+        
+        await callback_query.message.edit_text("✅ Barcha so'rovlar muvaffaqiyatli tozalandi!")
+        await callback_query.answer("Tozalandi", show_alert=False)
+
+    elif data == "cancel_clear_requests":
+        await callback_query.message.edit_text("❌ Tozalash amali bekor qilindi.")
+        await callback_query.answer("Bekor qilindi")
+
+@app.on_chat_join_request()
+async def handle_join_request(client, request):
+    user_id = request.from_user.id
+    chat_id = request.chat.id # So'rov yuborilgan kanal ID-si
+    
+    # Bazaga yozamiz: user_id bo'yicha pending_channels ro'yxatiga chat_id ni qo'shamiz
+    requests_col.update_one(
+        {"user_id": user_id},
+        {"$addToSet": {"pending_channels": str(chat_id)}},
         upsert=True
     )
 
-    await cb.answer("⭐ Added to favorites", show_alert=True)
+@app.on_chat_member_updated()
+async def clear_pending_on_join(client, chat_member_updated):
+    # Faqat yangi a'zo qo'shilganda yoki so'rov tasdiqlanganda ishlaydi
+    if chat_member_updated.new_chat_member and chat_member_updated.new_chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR]:
+        user_id = chat_member_updated.new_chat_member.user.id
+        chat_id = str(chat_member_updated.chat.id)
+        
+        # Bazadagi "pending" ro'yxatidan o'chirish
+        requests_col.update_one(
+            {"user_id": user_id},
+            {"$pull": {"pending_channels": chat_id}}
+        )
 
+# ==========================================
+#                BOT HANDLERS
+# ==========================================
 
-@app.on_message(filters.text & filters.regex("^⭐ Favorites$"))
-async def myfav_text(client, msg):
-
-    if not await force_join(client, msg):
+# ⬇️ YANGI FUNKSIYANI SHU YERGA QO'YING ⬇️
+@app.on_message(filters.chat(SAVE_SHORTS) & filters.reply, group=-1)
+async def handle_shorts_processing(client, msg):
+    if not msg.reply_to_message.video:
         return
 
-    fav = fav_col.find_one({"user_id": msg.from_user.id})
+    import re
+    text = msg.text if msg.text else ""
+    code_match = re.search(r"start=(\d+)", text)
+    movie_code = code_match.group(1) if code_match else (text if text.isdigit() else None)
 
-    if not fav or not fav.get("movies"):
-        await msg.reply("⭐ No favorites yet!")
+    if not movie_code:
+        await msg.reply("❌ Xato: Videoga reply qilib kodni yuboring!")
         return
 
-    text = "⭐ Your Favorites:\n\n"
-    for code in fav["movies"]:
+    movie = movies_col.find_one({
+        "$or": [
+            {"code": movie_code},
+            {"code": int(movie_code) if movie_code.isdigit() else None}
+        ]
+    })
+
+    if not movie:
+        await msg.reply(f"❌ Bazada 【{movie_code}】 kodli kino topilmadi!")
+        return
+
+    bot_info = await client.get_me()
+    caption = (
+        f"🎬 <b>{movie['title']}</b>\n\n"
+        f"ℹ️ <i>Yuqoridagi videoda ushbu kinodan parcha ko'rsatilgan.</i>\n"
+        f"🔑 <b>Kino kodi:</b> <code>{movie['code']}</code>\n\n"
+        f"📥 <b>Kinoni yuklab olish uchun pastdagi tugmani bosing:</b>"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 Kinoni ko'rish / Yuklash", url=f"https://t.me/{bot_info.username}?start={movie['code']}")]
+    ])
+
+    try:
+        await client.send_video(
+            chat_id=MAIN_CHANNEL,
+            video=msg.reply_to_message.video.file_id,
+            caption=caption,
+            reply_markup=keyboard
+        )
+        await msg.reply("✅ Private kanalga muvaffaqiyatli yuborildi!")
+    except Exception as e:
+        await msg.reply(f"❌ Xatolik turi: {type(e).__name__}\nHabar: {e}")      
+
+@app.on_message((filters.text | filters.video | filters.photo) & filters.private)
+async def handle_text(client, msg):
+    
+    if not msg.from_user:
+        return
+
+    uid = msg.from_user.id
+    txt = msg.text
+
+    user_state = next((s for s in broadcast_wait if isinstance(s, str) and s.endswith(f"_{uid}")), None)
+    if user_state:
+    
+        if broadcast_wait:
+            # broadcast_wait ichida aynan shu user bormi yoki yo'qligini tekshirish xavfsizroq
+            # Biz sizning kodingizdagi "state" mantiqini user ID bilan tekshiramiz:
+            user_state = next((s for s in broadcast_wait if isinstance(s, str) and s.endswith(f"_{uid}")), None)
+            
+        if user_state:
+            if txt == "❌ Bekor qilish":
+                broadcast_wait.remove(user_state)
+                return await msg.reply("Bekor qilindi.", reply_markup=admin_menu())
+
+
+            if user_state.startswith("remadmin_"):
+                broadcast_wait.remove(user_state)
+                try:
+                    rem_id = int(txt)
+                    # Bazadagi admin_ids ro'yxatidan ushbu IDni o'chiramiz ($pull)
+                    result = db.settings.update_one(
+                        {"type": "bot_config"}, 
+                        {"$pull": {"admin_ids": rem_id}}
+                    )
+                    
+                    if result.modified_count > 0:
+                        return await msg.reply(f"✅ {rem_id} yordamchi adminlar ro'yxatidan o'chirildi.", reply_markup=admin_menu())
+                    else:
+                        return await msg.reply("❌ Bunday ID yordamchi adminlar ro'yxatida topilmadi.", reply_markup=admin_menu())
+                except: 
+                    return await msg.reply("❌ Xato! Faqat ID raqamini yuboring.")
+
+            elif user_state.startswith("addchan_"):
+                txt_input = txt.strip()
+                
+                ch_id = None
+                link = None
+                title = None
+
+                try:
+                    # --- KANALNI ANIQLASH QISMI (4 TA USUL) ---
+                    
+                    # 1-USUL: Kanal ID-si orqali (-100123456789)
+                    if txt_input.startswith("-100"):
+                        chat = await client.get_chat(txt_input)
+                        ch_id = chat.id
+                        title = chat.title
+                        link = chat.invite_link or f"https://t.me/c/{str(ch_id)[4:]}/1"
+
+                    # 2-USUL: Username orqali (@KanalNomi)
+                    elif txt_input.startswith("@"):
+                        chat = await client.get_chat(txt_input)
+                        ch_id = chat.id
+                        title = chat.title
+                        link = f"https://t.me/{txt_input[1:]}"
+
+                    # 3-USUL: Public Link orqali (https://t.me/KanalNomi)
+                    elif "t.me/" in txt_input and not "+" in txt_input and "/joinchat/" not in txt_input:
+                        # Username-ni linkdan ajratib olish
+                        path = txt_input.split("t.me/")[1].split("/")[0]
+                        chat = await client.get_chat(f"@{path}")
+                        ch_id = chat.id
+                        title = chat.title
+                        link = txt_input
+
+                    # 4-USUL: Private Link orqali (https://t.me/+abc... yoki /joinchat/...)
+                    elif "t.me/+" in txt_input or "joinchat" in txt_input:
+                        chat = await client.get_chat(txt_input)
+                        ch_id = chat.id
+                        title = chat.title
+                        link = txt_input
+
+                    else:
+                        # Hech qaysi formatga tushmasa, state-ni o'chirmasdan xato qaytaramiz
+                        return await msg.reply(
+                            "❌ **Noto'g'ri format!**\n\nIltimos, ID, Username yoki Link yuboring.\n"
+                            "Misol: `-100...`, `@username`, `https://t.me/...`",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_action")
+                            ]])
+                        )
+
+                except Exception as e:
+                    # Xatolik bo'lsa, state o'chmaydi (return ishlaydi), admin qayta urinishi mumkin
+                    return await msg.reply(
+                        f"❌ **Bot kanalni topa olmadi!**\n\n"
+                        f"**Sababi:** Bot kanalda admin emas yoki ma'lumot noto'g'ri.\n"
+                        f"**Xatolik:** `{e}`\n\n"
+                        "To'g'rilab qaytadan yuboring yoki bekor qiling:",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_action")
+                        ]])
+                    )
+
+                # --- BAZAGA SAQLASH QISMI ---
+                if ch_id and link:
+                    new_ch = {
+                        "id": str(ch_id), 
+                        "link": link, 
+                        "title": title or "Nomsiz kanal"
+                    }
+                    
+                    db.settings.update_one(
+                        {"type": "bot_config"}, 
+                        {"$addToSet": {"mandatory_channels": new_ch}},
+                        upsert=True
+                    )
+                    
+                    # FAQAT muvaffaqiyatli yakunlangandagina state-ni o'chiramiz
+                    if user_state in broadcast_wait:
+                        broadcast_wait.remove(user_state)
+                    
+                    return await msg.reply(
+                        f"✅ **Kanal muvaffaqiyatli qo'shildi!**\n\n"
+                        f"📢 Nomi: {title}\n"
+                        f"🆔 ID: <code>{ch_id}</code>\n"
+                        f"🔗 Link: {link}", 
+                        reply_markup=admin_menu()
+                    )
+
+            elif user_state.startswith("remchan_"):
+                ch_id_input = txt.strip()
+                
+                # 1. Bazadan config-ni olamiz
+                conf = db.settings.find_one({"type": "bot_config"})
+                if not conf:
+                    return await msg.reply("❌ Sozlamalar topilmadi!")
+
+                channels = conf.get("mandatory_channels", [])
+                
+                # 2. Kanalni qidirish (ID ni ham string, ham int holatida tekshiramiz)
+                target_channel = None
+                for c in channels:
+                    # Har ikkala tomonni string-ga o'tkazib solishtirish eng xavfsiz yo'l
+                    if str(c.get('id')) == str(ch_id_input):
+                        target_channel = c
+                        break
+
+                if target_channel:
+                    # 3. Bazadan o'chirish
+                    # MongoDB-da ham string, ham int bo'lishi mumkinligini hisobga olamiz
+                    db.settings.update_one(
+                        {"type": "bot_config"},
+                        {
+                            "$pull": {
+                                "mandatory_channels": {
+                                    # Bu yerda aynan o'sha ob'ektni o'chiramiz
+                                    "id": target_channel['id'] 
+                                }
+                            }
+                        }
+                    )
+                    
+                    # State-ni tozalash
+                    if user_state in broadcast_wait:
+                        broadcast_wait.remove(user_state)
+                        
+                    return await msg.reply(
+                        f"🗑 **Kanal muvaffaqiyatli o'chirildi!**\n\n"
+                        f"🆔 ID: <code>{target_channel['id']}</code>\n"
+                        f"🔗 Link: {target_channel.get('link', 'Mavjud emas')}",
+                        reply_markup=admin_menu()
+                    )
+                else:
+                    # Topilmasa, ro'yxatni ko'rsatish foydali bo'ladi
+                    available_ids = ", ".join([f"<code>{c.get('id')}</code>" for c in channels])
+                    return await msg.reply(
+                        f"❌ **Bunday ID dagi kanal topilmadi!**\n\n"
+                        f"Mavjud ID lar: {available_ids}\n\n"
+                        "Iltimos, ID ni aniq ko'chirib yuboring:",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_action")
+                        ]])
+                    )
+                
+            elif user_state.startswith("setmoviechan_"):
+                broadcast_wait.remove(user_state)
+                link = txt.strip()
+                
+                # Linkdan ID yoki Username ajratish
+                if link.startswith("-100"):
+                    movie_ch = int(link)
+                elif link.startswith("@"):
+                    movie_ch = link
+                elif "t.me/" in link:
+                    # t.me/username yoki t.me/c/12345/678 linklaridan ID/Username olish
+                    part = link.split("t.me/")[1].split("/")[0]
+                    movie_ch = f"@{part}" if not part.startswith("+") else link
+                else:
+                    return await msg.reply("❌ Noto'g'ri format! @username yoki kanal ID yuboring.")
+
+                db.settings.update_one({"type": "bot_config"}, {"$set": {"movie_channel": movie_ch}})
+                return await msg.reply(f"✅ Kino kanali yangilandi: <code>{movie_ch}</code>", reply_markup=admin_menu())
+
+            if user_state.startswith("addadmin_"):
+                broadcast_wait.remove(user_state)
+                try:
+                    new_id = int(txt)
+                    
+                    # 1. Bazaga yordamchi admin sifatida qo'shish
+                    db.settings.update_one(
+                        {"type": "bot_config"}, 
+                        {"$addToSet": {"admin_ids": new_id}}
+                    )
+
+                    # 2. YANGI YORDAMCHI ADMINGA XABAR YUBORISH
+                    try:
+                        await client.send_message(
+                            chat_id=new_id,
+                            text=(
+                                "👨‍💻 <b>Siz ushbu botga yordamchi admin etib tayinlandingiz!</b>\n\n"
+                                "Endi sizda quyidagi huquqlar bor:\n"
+                                "• Bot statistikasini ko'rish\n"
+                                "• Foydalanuvchilarga xabar yuborish\n\n"
+                                "<i>Admin panelga kirish uchun /start bosing.</i>"
+                            ),
+                            reply_markup=admin_menu() # Unga admin panel klaviaturasini yuboramiz
+                        )
+                    except Exception as e:
+                        print(f"Yordamchi adminga xabar yuborib bo'lmadi: {e}")
+
+                    # 3. ASOSIY ADMINGA TASDIQ
+                    return await msg.reply(
+                        f"✅ <code>{new_id}</code> yordamchi adminlar ro'yxatiga qo'shildi va xabardor qilindi.", 
+                        reply_markup=admin_menu()
+                    )
+                except ValueError:
+                    return await msg.reply("❌ Xato! Faqat ID raqam yuboring.")
+
+            elif user_state.startswith("transfer_"):
+                broadcast_wait.remove(user_state)
+                try:
+                    new_main_id = int(txt)
+                    
+                    # 1. Bazada asosiy adminni yangilash
+                    db.settings.update_one(
+                        {"type": "bot_config"}, 
+                        {"$set": {"main_admin": new_main_id}}
+                    )
+                    
+                    # 2. Yangi adminni yordamchilar ro'yxatidan o'chirish (agar u yerda bo'lsa)
+                    db.settings.update_one(
+                        {"type": "bot_config"}, 
+                        {"$pull": {"admin_ids": new_main_id}}
+                    )
+
+                    # 3. YANGI ADMINGA XABAR YUBORISH
+                    try:
+                        await client.send_message(
+                            chat_id=new_main_id,
+                            text=(
+                                "👑 <b>Tabriklaymiz!</b>\n\n"
+                                "Siz ushbu botning <b>Asosiy Admini</b> etib tayinlandingiz. "
+                                "Endi barcha sozlamalarni boshqarish huquqi sizda.\n\n"
+                                "👉 /start tugmasini bosing."
+                            ),
+                            reply_markup=admin_menu() # Unga darhol admin menyusini yuboramiz
+                        )
+                    except Exception as e:
+                        # Agar yangi admin botni bloklagan bo'lsa yoki hali start bosmagan bo'lsa
+                        print(f"Yangi adminga xabar yuborib bo'lmadi: {e}")
+
+                    # 4. ESKI ADMINGA TASDIQ XABARI
+                    await msg.reply(
+                        f"✅ <b>Egalik huquqi muvaffaqiyatli o'tkazildi!</b>\n\n"
+                        f"Yangi admin (ID: <code>{new_main_id}</code>) xabardor qilindi.", 
+                        reply_markup=user_menu(uid)
+                    )
+                    return 
+                except ValueError:
+                    return await msg.reply("❌ Xato! Iltimos, faqat raqamli ID yuboring.")
+                    
+
+            # Boshqa statelar (reklama, transfer va hokazo)...
+
+    # 2. Keyin oddiy buyruqlarni tekshiramiz
+    if not await check_force_join(client, msg): return
+
+    if txt == "🏆 Leaderboard":
+
+        # Leaderboard funksiyasini chaqiramiz
+
+        res_text = await get_leaderboard_text()
+
+        return await msg.reply(res_text)
+
+# Kod orqali qidirish qismi
+    if txt and txt.isdigit():
+        code = int(txt)
         movie = movies_col.find_one({"code": code})
         if movie:
-            text += f"{movie['title']} (Code {movie['code']})\n"
+            # Ham umumiy, ham haftalik yuklashlarni +1 qilamiz
+            movies_col.update_one(
+                {"code": code}, 
+                {"$inc": {"downloads": 1, "weekly_downloads": 1}} 
+            )
+            
+            insta = movie.get("insta_link")
+            await msg.reply_video(
+                video=movie["file_id"],
+                caption=movie["title"],
+                reply_markup=movie_extra_kb(code, is_admin(uid), insta_link=insta)
+            )
+            return
 
-    await msg.reply(text)
-
-#=====Statistics Format=====#
-
-def build_statistics_text():
-    now = datetime.utcnow()
-    since = now - timedelta(days=1)
-
-    total_users = users_col.count_documents({})
-    total_movies = movies_col.count_documents({})
-    total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
-
-    daily_new_users = users_col.count_documents({
-        "joined_at": {"$gte": since}
-    })
-
-    daily_downloads = movies_col.count_documents({
-        "last_download": {"$gte": since}
-    })
-
-    return (
-        "📊 Statistics\n\n"
-        f"👤 New users today: {daily_new_users}\n"
-        f"⬇ Downloads today: {daily_downloads}\n\n"
-        f"👥 Total users: {total_users}\n"
-        f"🎬 Total movies: {total_movies}\n"
-        f"⬇ Total downloads: {total_downloads}\n\n"
-        f"⏰ Time: {now.strftime('%Y-%m-%d %H:%M')} UTC"
-    )
-
-
-# ===== STATS =====
-
-@app.on_message(filters.text & filters.regex("^📊 Statistics$"))
-async def statistics_text(client, msg):
-
-    # force mandatory join
-    if not await force_join(client, msg):
+# --- ADMIN APPROVE LOGIC ---
+    if uid in approve_wait:
+        if txt == "❌ Bekor qilish":
+            approve_wait.pop(uid)
+            return await msg.reply("Bekor qilindi.", reply_markup=admin_menu())
+        
+        data = approve_wait.pop(uid)
+        try:
+            code = int(txt)
+            # Foydalanuvchiga yuboriladigan avtomatik matn
+            user_text = (
+                f"✅ <b>Siz so'ragan kino {SAVED_MOVIE} kanaliga yuklandi!</b>\n\n"
+                f"🍿 Kino kodi: <code>{code}</code>\n"
+                f"🎬 Nomi: {data['name']}\n\n"
+                f"<i>Botga kodni yuborib kinoni yuklab olishingiz mumkin.</i>"
+            )
+            await client.send_message(data["target"], user_text)
+            
+            # So'rovni bazadan o'chirish
+            req_col.delete_one({"user_id": data["target"], "name": data["name"]})
+            
+            await msg.reply("✅ Foydalanuvchiga xabar va kino kodi yuborildi.", reply_markup=admin_menu())
+        except:
+            await msg.reply("Xato! Faqat raqamli kod yuboring.")
         return
 
-    # admin-only
-    if msg.from_user.id != ADS:
-        await msg.reply("⛔ This section is for admins only.")
+
+# --- STATISTIKA (USERLAR UCHUN) ---
+    if txt == "📊 Statistika":
+        u_dat = users_col.find_one({"user_id": uid})
+        refs = u_dat.get("referrals", 0) if u_dat else 0
+        
+        # VIP Statusni aniqlash
+        vip_status = "✅ Faol" if refs >= 5 or is_admin(uid) else "❌ Faol emas"
+        
+        # Jami yuklab olishlarni hisoblash (Userlar ko'rishi uchun)
+        all_movies = list(movies_col.find({}, {"downloads": 1}))
+        total_downloads = sum(m.get("downloads", 0) for m in all_movies)
+        
+        u_count = users_col.count_documents({})
+        now = datetime.now(UZ_TZ)
+
+        res = (
+            f"📊 <b>Statistika:</b>\n"
+            f"______________________________________\n\n"
+            f"💎 <b>VIP Status:</b> {vip_status}\n"
+            f"👥 Do'stlaringiz: <code>{refs} ta</code>\n\n"
+            f"👤 Jami Userlar: {u_count}\n"
+            f"📥 Jami yuklab olishlar: {total_downloads}\n" # Siz so'ragan o'zgarish
+            f"⏰ Vaqt: {now.strftime('%H:%M / %d.%m.%Y')}"
+        )
+        return await msg.reply(res)
+
+    # --- ADMIN PANEL (FAQAT ADMIN UCHUN) ---
+    if txt == "📊 Admin Panel" and is_admin(uid):
+        # Admin uchun ham yuklab olishlarni hisoblash
+        all_movies = list(movies_col.find({}, {"downloads": 1}))
+        total_downloads = sum(m.get("downloads", 0) for m in all_movies)
+        
+        u_count = users_col.count_documents({})
+        m_count = movies_col.count_documents({})
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_u = users_col.count_documents({"joined_at": {"$gte": today_start}})
+        
+        now = datetime.now(UZ_TZ)
+
+        res = (
+            f"📊 <b>Admin Panel Statistika</b>\n"
+            f"______________________________________\n\n"
+            f"🆕 Bugun qo'shildi: {today_u}\n"
+            f"👥 Jami Userlar: {u_count}\n"
+            f"🎬 Jami yuklangan kinolar: {m_count}\n"
+            f"📥 Jami yuklab olishlar: {total_downloads}\n\n"
+            f"⏰ Vaqt: {now.strftime('%Y-%m-%d %H:%M')}"
+        )
+        return await msg.reply(res, reply_markup=admin_menu())
+
+
+    # --- MAIN MENU ACTIONS ---
+    if txt == "🎭 Janrlar":
+        return await msg.reply("🎭 Janrni tanlang:", reply_markup=genres_keyboard())
+
+    if txt == "📂 Barcha Kinolar":
+        t, m = get_movie_list(1)
+        return await msg.reply(t, reply_markup=m)
+
+    if txt == "📈 Top Kinolar":
+        top = list(movies_col.find().sort([("avg_rating", -1), ("downloads", -1)]).limit(10))
+        res = "📈 <b>Top 10 Kinolar:</b>\n\n"
+        for x in top:
+            t_line = x['title'].split('\n')[0]
+            res += f"🎬 {t_line}\n🔑 FILM KODI: <code>{x['code']}</code>\n\n"
+        return await msg.reply(res)
+
+    if txt == "⭐ Sevimlilar":
+        fav = fav_col.find_one({"user_id": uid})
+        if not fav or not fav.get("movies"):
+            return await msg.reply("⭐ Sevimlilar ro'yxatingiz bo'sh.")
+        res = "⭐ <b>Siz saqlagan kinolar:</b>\n\n"
+        for c in fav["movies"]:
+            m = movies_col.find_one({"code": c})
+            if m:
+                t_line = m['title'].split('\n')[0]
+                res += f"🎬 {t_line}\n🔑 FILM KODI: <code>{m['code']}</code>\n\n"
+        return await msg.reply(res)
+
+    if txt == "📥 Kino so'rash":
+        u_dat = users_col.find_one({"user_id": uid})
+        refs = u_dat.get("referrals", 0) if u_dat else 0
+        
+        # VIP TEKSHIRUVI (5 ta do'st)
+        if refs < 5 and not is_admin(uid):
+            bot_obj = await client.get_me()
+            ref_link = f"https://t.me/{bot_obj.username}?start={uid}"
+            
+            vip_text = (
+                "⚠️ <b>KECHIRASIZ, SIZ VIP EMASSIZ!</b>\n"
+                "______________________________________\n\n"
+                "📥 <b>Kino so'rash</b> funksiyasi faqat VIP a'zolar uchun.\n"
+                f"👤 Sizning takliflaringiz: <code>{refs} ta</code>\n"
+                f"🚀 Yana <code>{5 - refs} ta</code> do'st qo'shishingiz kerak.\n\n"
+                f"🔗 <b>Sizning havolangiz:</b>\n<code>{ref_link}</code>"
+            )
+            
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Ulashish (Share)", url=f"https://t.me/share/url?url={ref_link}")]
+            ])
+            return await msg.reply(vip_text, reply_markup=kb)
+
+        # VIP bo'lsa yoki Admin bo'lsa
+        request_wait.add(uid)
+        return await msg.reply("✍🏻 <b>Kino nomini yozing:</b>", reply_markup=cancel_menu())
+        
+
+    if txt == "📢 Reklama":
+        return await msg.reply("📢 Reklama xizmati bo'yicha admin bilan bog'laning: @Mr_Javohirjon")
+
+    if txt == "⬅️ Orqaga":
+        return await msg.reply("Bosh menyu:", reply_markup=user_menu(uid))
+
+    if txt == "⚙️ Admin Menu" and is_admin(uid):
+        return await msg.reply("⚙️ Admin paneliga xush kelibsiz.", reply_markup=admin_menu())
+
+    if txt == "⚙️ Sozlamalar":
+        await msg.reply("⚙️ Sozlamalar bo'limi:", reply_markup=admin_settings_menu())
+
+    if txt == "📋 Kanallar ro'yxati":
+        conf = get_config()
+        channels = conf.get("mandatory_channels", [])
+        text = "📢 **Majburiy kanallar:**\n\n" + ("\n".join(channels) if channels else "Hozircha kanallar yo'q")
+        await msg.reply(text)
+
+    if txt == "👤 User Menu ga qaytish":
+        return await msg.reply("👤 Foydalanuvchi menyusi.", reply_markup=user_menu(uid))
+
+     # --- GENRE CLICKS ---
+    if txt and txt.startswith("📁 "):
+        genre_name = txt.replace("📁 ", "").lower()
+        t, m = get_movie_list(1, genre_name)
+        return await msg.reply(t, reply_markup=m)    
+
+    # --- STATES ---
+    if uid in request_wait:
+        request_wait.remove(uid)
+        if txt == "❌ Bekor qilish": return await msg.reply("Bekor qilindi.", reply_markup=user_menu(uid))
+        req_col.insert_one({"name": txt, "username": msg.from_user.first_name, "user_id": uid})
+        return await msg.reply("✅ So'rov yuborildi! Tez orada bazaga qo'shiladi.", reply_markup=user_menu(uid))
+
+    if uid in broadcast_wait:
+
+
+        broadcast_wait.remove(uid)
+        if txt == "❌ Bekor qilish": return await msg.reply("Bekor qilindi.", reply_markup=admin_menu())
+        sent = 0
+        for user in users_col.find():
+            try:
+                await msg.copy(user["user_id"])
+                sent += 1
+                await asyncio.sleep(0.05)
+            except: pass
+        return await msg.reply(f"✅ Xabar {sent} ta foydalanuvchiga yuborildi.")
+
+#=====ReferalButton=====#
+
+    if txt == "🔗 Taklifnoma":
+        await send_referral_info(client, msg)
         return
+
+    if is_admin(uid):
+
+        # --- ADMIN BOSHQARUVI ---
+        if txt == "👤 Admin qo'shish":
+            broadcast_wait.add(f"addadmin_{uid}") # kutish holati
+            return await msg.reply("➕ Yangi admin ID raqamini yuboring:", reply_markup=cancel_menu())
+
+        if txt == "👤 Admin o'chirish":
+            conf = get_config()
+            admins = conf.get("admin_ids", [])
+            if not admins: return await msg.reply("Yordamchi adminlar mavjud emas.")
+            res = "👤 **O'chirish uchun ID'ni yuboring:**\n\n"
+            for a in admins: res += f"• <code>{a}</code>\n"
+            broadcast_wait.add(f"remadmin_{uid}")
+            return await msg.reply(res, reply_markup=cancel_menu())
+
+        # --- KANALLAR BOSHQARUVI ---
+        if txt == "➕ Kanal qo'shish":
+            broadcast_wait.add(f"addchan_{uid}")
+            return await msg.reply("📢 Kanal ma'lumotlarini formatda yuboring:\n\n`@kanal_username | Kanal Nomi | https://t.me/link`", reply_markup=cancel_menu())
+
+        elif txt == "➖ Kanal o'chirish" and is_admin(uid):
+            conf = get_config()
+            chans = conf.get("mandatory_channels", [])
+            
+            if not chans:
+                return await msg.reply("❌ Hozircha majburiy kanallar yo'q.")
+            
+            res = "➖ **O'chirish uchun kanal linkini nusxalab yuboring:**\n\n"
+            for index, c in enumerate(chans, start=1):
+                # Linkni bosganda nusxa ko'chiriladigan formatda chiqaramiz
+                res += f"{index}. <code>{c['link']}</code>\n"
+            
+            broadcast_wait.add(f"remchan_{uid}")
+            return await msg.reply(res, reply_markup=cancel_menu())
+
+        # --- KINO KANAL (Sizning 3-talabingiz) ---
+        if txt == "🎬 Kino kanalni sozlash":
+            broadcast_wait.add(f"setmoviechan_{uid}")
+            return await msg.reply("🎬 Kinolar yuboriladigan kanal ID sini yuboring (Masalan: -100...):", reply_markup=cancel_menu())
+
+        # --- ADMIN TRANSFER (Sizning 4-talabingiz) ---
+        if txt == "👑 Adminlikni o'tkazish" and is_main_admin(uid):
+            broadcast_wait.add(f"transfer_{uid}")
+            return await msg.reply("⚠️ **DIQQAT!** Yangi Asosiy Admin ID raqamini yuboring. Shundan so'ng sizning huquqlaringiz cheklanadi!", reply_markup=cancel_menu())
+
+
+        if txt == "📥 Kelgan So'rovlar":
+            reqs = list(req_col.find().limit(5))
+            if not reqs: 
+                return await msg.reply("Hozircha so'rovlar yo'q.")
+            
+            for r in reqs:
+                tid = r.get('user_id')
+                req_name = r.get('name', 'Noma\'lum foydalanuvchi')
+                # Tugmalarga "Topilmadi" variantini qo'shamiz
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Topildi", callback_data=f"approve_{tid}_{req_name}"),
+                        InlineKeyboardButton("❌ Topilmadi", callback_data=f"notfound_{tid}_{req_name}")
+                    ]
+                ])
+                await msg.reply(f"🎬 <b>So'rov:</b> {req_name}\n👤 Kimdan: {tid}", reply_markup=kb)
+            return
+
+        if txt == "🗑 So'rovlarni tozalash" and is_admin(uid):
+            confirm_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Ha, o'chirilsin", callback_data="confirm_clear_requests"),
+                    InlineKeyboardButton("❌ Yo'q, bekor qilish", callback_data="cancel_clear_requests")
+                ]
+            ])
+            return await msg.reply(
+                "⚠️ <b>DIQQAT!</b>\n\nBarcha kelgan so'rovlarni o'chirib tashlamoqchimisiz? "
+                "Bu amalni ortga qaytarib bo'lmaydi!", 
+                reply_markup=confirm_markup
+            )
+
+        if txt == "📢 Xabar yuborish" and is_admin(uid):
+            broadcast_wait.add(uid)
+            return await msg.reply(
+                "✍️ Yuboriladigan xabarni yuboring (rasm, video yoki tekst):",
+                reply_markup=cancel_menu()
+            )
+
+
+
+    # --- SEARCH MOVIE BY CODE ---
+
+    if not txt.isdigit() and len(txt) > 2:
+        # Kinolarni nomi bo'yicha qidirish (regex - qisman mos kelsa ham topadi)
+        movies = list(movies_col.find({"title": {"$regex": txt, "$options": "i"}}).limit(5))
+        
+        if movies:
+            res_text = f"🔍 <b>'{txt}' bo'yicha topilgan kinolar:</b>\n\n"
+            for m in movies:
+                t_line = m['title'].split('\n')[0]
+                res_text += f"🎬 {t_line}\n🔑 Kod: <code>{m['code']}</code>\n\n"
+            return await msg.reply(res_text)
+        # Agar topilmasa, hech narsa qilmaydi yoki "Topilmadi" deb qaytaradi
+
+#========Referal======#
+
+async def send_referral_info(client, msg):
+    """
+    Faqat referal (Taklifnoma) qismi uchun funksiya.
+    Rasmda ko'rsatilgan VIP mantiqi va dizayni asosida.
+    """
+    uid = msg.from_user.id
+    bot_obj = await client.get_me()
+    bot_username = bot_obj.username
     
+    # Foydalanuvchi ma'lumotlarini bazadan olish
+    user_data = users_col.find_one({"user_id": uid})
+    referrals_count = user_data.get("referrals", 0) if user_data else 0
+    
+    # VIP mantiqini hisoblash: Har 5 ta do'st uchun 1 ta limit
+    current_limit = referrals_count // 5
+    next_limit_step = 5 - (referrals_count % 5)
+    
+    # Referal havola yaratish
+    ref_link = f"https://t.me/{bot_username}?start={uid}"
+    
+    # Rasmda ko'rsatilgan matn formati
+    text = (
+        f"🎁 <b>DO'STLARINGIZNI TAKLIF QILING VA VIP BO'LING!</b>\n"
+        f"______________________________________\n\n"
+        f"👤 <b>Sizning holatingiz:</b>\n"
+        f"┣ Do'stlar: <code>{referrals_count} ta</code>\n"
+        f"┣ Kunlik limit: <b>{current_limit} ta kino</b>\n"
+        f"┗ Keyingi limitga: <code>{next_limit_step} ta</code> do'st qoldi\n\n"
+        f"💎 <b>VIP Tizimi qanday ishlaydi?</b>\n"
+        f"• 5 ta do'st = Kuniga <b>1 ta</b> kino so'rash\n"
+        f"• 10 ta do'st = Kuniga <b>2 ta</b> kino so'rash\n"
+        f"• Har 5 ta do'st uchun limit <b>+1</b> ga oshadi!\n\n"
+        f"🔗 <b>Sizning maxsus havolangiz:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"<i>Havolani do'stlaringizga yuboring va kino olamini birga kashf qiling! 🚀</i>"
+    )
+    
+    # Ulashish tugmasi (Share)
+    share_url = f"https://t.me/share/url?url={ref_link}"
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Ulashish (Share)", url=share_url)]
+    ])
+    
+    await msg.reply(text, reply_markup=reply_markup, disable_web_page_preview=True)
+
+#=======Haftalik Doska=======#
+
+async def get_leaderboard_text():
+    # TOP 10 (Referral >= 5)
+    top_users = list(users_col.find({"referrals": {"$gte": 5}}).sort("referrals", -1).limit(10))
+    
+    text = "🏆 <b>HAFTALIK TOP 10 REYTING</b>\n"
+    text += "______________________________________\n\n"
+    
+    if not top_users:
+        text += "😔 Hozircha VIP talablariga mos (5+ do'st) userlar yo'q.\n"
+    else:
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        for i, u in enumerate(top_users):
+            name = u.get("first_name", "Foydalanuvchi")
+            count = u.get("referrals", 0)
+            # Agar foydalanuvchi hozirda VIP bo'lsa, yoniga belgi qo'yamiz
+            status = " ✨" if u.get("is_vip") else ""
+            text += f"{medals[i]} {name[:15]}{status} — <b>{count} ta</b>\n"
+
+    text += "\n______________________________________\n"
+    text += "🎁 <b>VIP Imtiyozlari:</b>\n"
+    text += "✅ Majburiy obunalarsiz foydalanish\n"
+    text += "✅ 1 hafta davomida amal qiladi\n\n"
+    text += "⏰ <i>Har yakshanba soat 20:00 da yangilanadi.</i>"
+    
+    return text
+
+
+@app.on_message(filters.text & filters.private)
+async def all_movies_list(client, msg):
+    if msg.text == "Barcha kinolar":
+        # Bazadan oxirgi 10 ta kinoni olish
+        movies = list(movies_col.find().sort("_id", -1).limit(10))
+        
+        if not movies:
+            return await msg.reply("Hozircha bazada kinolar yo'q.")
+
+        text = "🎬 **Oxirgi yuklangan kinolar ro'yxati:**\n\n"
+        buttons = []
+        row = []
+
+        for i, movie in enumerate(movies, 1):
+            title = movie.get("title", "Nomsiz kino").split('\n')[0][:30]
+            text += f"{i}. {title} (Kod: `{movie['code']}`)\n"
+            
+            # Har bir raqam uchun callback_data (masalan: showmovie_123)
+            row.append(InlineKeyboardButton(str(i), callback_data=f"showmovie_{movie['code']}"))
+            
+            if i % 5 == 0: # Har 5 ta tugmadan keyin yangi qator
+                buttons.append(row)
+                row = []
+        
+        if row: buttons.append(row)
+
+        await msg.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+
+@app.on_callback_query(filters.regex(r"^showmovie_(\d+)"))
+async def show_movie_by_button(client, cb):
+    movie_code = int(cb.data.split("_")[1])
+    movie = movies_col.find_one({"code": movie_code})
+
+    if not movie:
+        return await cb.answer("Kino topilmadi!", show_alert=True)
+
+    await cb.answer("Kino yuborilmoqda...")
+
+    # Kinoni yuborish (Bitta video yoki guruhli ekanini tekshirish)
+    if movie.get("is_group"):
+        # Guruhli kino bo'lsa, birinchi qismini yoki tanlash menyusini yuboring
+        first_part = movie["file_ids"][0]
+        await client.send_video(
+            cb.from_user.id, 
+            video=first_part, 
+            caption=f"🎬 {movie['title']}\n\n🍿 Bu ko'p qismli kino. Barcha qismlarni bot orqali ko'rishingiz mumkin."
+        )
+    else:
+        # Oddiy bitta videoli kino
+        await client.send_video(
+            cb.from_user.id, 
+            video=movie["file_id"], 
+            caption=f"🎬 {movie['title']}\n\n🔑 Kod: {movie['code']}"
+        )
+
+# ==========================================
+#         AUTO SAVE FROM CHANNEL
+# ==========================================
+
+@app.on_message(filters.video & filters.chat(SAVED_MOVIE))
+async def save_movie_from_channel(client, msg):
+    caption = msg.caption or ""
+    # Hashtag orqali 11 ta janrdan birini aniqlash
+    found_genres = [word.strip("#").lower() for word in caption.split() if word.startswith("#") and word.strip("#").lower() in ALLOWED_GENRES]
+    
+    if not found_genres:
+        found_genres = ["boshqa"]
+
+    
+        
+    last_movie = movies_col.find_one(sort=[("code", -1)])
+    new_code = 1 if not last_movie else last_movie["code"] + 1
+    
+    # --- 1272-qatordan boshlab yangi kod ---
+        
+    # 1. 5 Yulduzli tugmalarni yasash
+    star_buttons = [
+        InlineKeyboardButton("⭐ 1", callback_data=f"star_1_{new_code}"),
+        InlineKeyboardButton("⭐ 2", callback_data=f"star_2_{new_code}"),
+        InlineKeyboardButton("⭐ 3", callback_data=f"star_3_{new_code}"),
+        InlineKeyboardButton("⭐ 4", callback_data=f"star_4_{new_code}"),
+        InlineKeyboardButton("⭐ 5", callback_data=f"star_5_{new_code}")
+    ]
+    
+    movie_buttons = InlineKeyboardMarkup([
+        star_buttons, # Birinchi qatorda yulduzlar
+        [
+            InlineKeyboardButton("🎬 Kinodan parcha", callback_data=f"trailer_none"), # Hozircha bo'sh
+            InlineKeyboardButton("⭐ Sevimlilar", callback_data=f"fav_{new_code}")
+        ]
+    ])
+
+    # 2. Bazaga saqlash (Aniq fakt: file_id birlikda bo'lishi shart)
+    movies_col.insert_one({
+        "code": new_code, 
+        "file_id": msg.video.file_id, 
+        "title": caption, 
+        "downloads": 0, 
+        "weekly_downloads": 0,
+        "genres": found_genres,
+        "rating": 0.0,       # O'rtacha ball boshida 0
+        "votes_count": 0,    # Ovozlar soni boshida 0
+        "total_stars": 0     # Jami yig'ilgan yulduzlar boshida 0
+    })
+
+    # 3. Kanalga javob yuborish (Tugmalar bilan)
     await msg.reply(
-        build_statistics_text()
+        f"✅ <b>Bot bazasiga saqlandi!</b>\n\n"
+        f"🔑 <b>FILM KODI:</b> <code>{new_code}</code>\n"
+        f"🎭 <b>Janrlar:</b> #{' #'.join(found_genres)}\n"
+        f"📊 <b>Reyting:</b> 0.0 (0 ta ovoz)",
+        reply_markup=movie_buttons
     )
+    # --- Blok tugadi ---
 
-# ===== TOP (NAME + CODE ONLY) =====
+@app.on_message(filters.chat(SAVED_MOVIE) & filters.reply & filters.text)
+async def update_trailer_link(client, msg):
+    # Agar reply qilingan xabar botniki bo'lsa va unda "FILM KODI" so'zi bo'lsa
+    if msg.reply_to_message.from_user.is_self and "FILM KODI:" in msg.reply_to_message.text:
+        # Linkni tekshirish (faqat instagram bo'lsa)
+        if "instagram.com" in msg.text:
+            try:
+                # Xabar matnidan kodni ajratib olish (FILM KODI: 123)
+                text = msg.reply_to_message.text
+                movie_code = int(text.split("FILM KODI:")[1].split()[0].strip())
+                
+                # Bazani yangilash
+                link = msg.text.strip()
+                movies_col.update_one({"code": movie_code}, {"$set": {"trailer": link}})
+                
+                # Tugmalarni yangilash (Endi tugma Instagramga olib boradi)
+                # Oldingi tugmalarni olib, 'trailer' tugmasini URL tugmaga aylantiramiz
+                new_markup = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("⭐ 1", callback_data=f"star_1_{movie_code}"),
+                        InlineKeyboardButton("⭐ 2", callback_data=f"star_2_{movie_code}"),
+                        InlineKeyboardButton("⭐ 3", callback_data=f"star_3_{movie_code}"),
+                        InlineKeyboardButton("⭐ 4", callback_data=f"star_4_{movie_code}"),
+                        InlineKeyboardButton("⭐ 5", callback_data=f"star_5_{movie_code}")
+                    ],
+                    [
+                        InlineKeyboardButton("🎬 Kinodan parcha", url=link), # Endi bu URL tugma
+                        InlineKeyboardButton("⭐ Sevimlilar", callback_data=f"fav_{movie_code}")
+                    ]
+                ])
+                
+                await msg.reply_to_message.edit_reply_markup(reply_markup=new_markup)
+                await msg.reply("✅ Kinodan parcha (link) muvaffaqiyatli bog'landi!")
+                await msg.delete() # Siz yuborgan link xabarini o'chirib tashlaydi
+                
+            except Exception as e:
+                await msg.reply(f"❌ Xatolik: {str(e)}")
 
-@app.on_message(filters.text & filters.regex("^📈 Top Movies$"))
-async def top_text(client, msg):
+#=====Inline Search======#
 
-    if not await force_join(client, msg):
-        return
+from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
 
-    movies = list(
-        movies_col.find().sort("downloads", -1).limit(5)
-    )
+@app.on_inline_query()
+async def inline_search(client, query):
+    string = query.query.strip()
+    
+    # Bot username'ini keshdan olamiz
+    bot_username = client.me.username if client.me else "bot_username"
 
-    if not movies:
-        await msg.reply("No movies yet")
-        return
+    # Agar qidiruv bo'sh bo'lsa, eng ko'p yuklangan 5 ta kinoni ko'rsatadi
+    if not string:
+        movies = list(movies_col.find().sort("downloads", -1).limit(5))
+    
+    # Agar faqat raqam yozilgan bo'lsa (Kod bo'yicha qidiruv)
+    elif string.isdigit():
+        movies = list(movies_col.find({"code": int(string)}))
+    
+    # Agar raqam bo'lmasa, hech narsa ko'rsatmaydi (yoki bo'sh ro'yxat)
+    else:
+        movies = []
 
-    text = "📈 Top Movies:\n\n"
-    for i, m in enumerate(movies, 1):
-        text += f"{i}. {m['title']} (Code {m['code']})\n"
-
-    await msg.reply(text)
-
-
-# ===== REQUEST AUTO APPROVE =====
-
-@app.on_message(filters.command("request"))
-async def request_movie(client, msg):
-
-    if not await force_join(client, msg):
-        return
-
-    name = msg.text.replace("/request", "").strip().lower()
-
-    movie = movies_col.find_one({"title": {"$regex": name, "$options": "i"}})
-    if movie:
-        await client.send_video(msg.chat.id, movie["file_id"], caption=movie["title"])
-        return
-
-    req_col.insert_one({"name": name})
-    await msg.reply("📥 Requested! Will be added soon")
-
-
-# ===== ADMIN PANEL =====
-
-@app.on_callback_query(filters.regex("admin"))
-async def admin_panel(client,cb):
-    if cb.from_user.id not in ADS: return
-    await cb.message.edit_text("⭐ Admin Panel",reply_markup=admin_menu())
-
-@app.on_callback_query(filters.regex("back"))
-async def back(client,cb):
-    await cb.message.edit_text("🎬 Menu",reply_markup=user_menu(cb.from_user.id in ADS))
-
-# ===== VIEW REQUESTS =====
-
-@app.on_message(filters.text & filters.regex("^📥 Requests$"))
-async def admin_requests(client, msg):
-    if msg.from_user.id not in ADS:
-        return
-
-    reqs = list(req_col.find())
-    if not reqs:
-        await msg.reply("No requests")
-        return
-
-    text = "📥 Requests:\n\n"
-    for i, r in enumerate(reqs, 1):
-        text += f"{i}. {r['name']}\n"
-
-    await msg.reply(text)
-
-#=====Daily_statistics======#
-
-async def send_daily_stats():
-    try:
-        now = datetime.utcnow()
-        since = now - timedelta(days=1)
-
-        total_users = users_col.count_documents({})
-        total_movies = movies_col.count_documents({})
-        total_downloads = sum(m.get("downloads", 0) for m in movies_col.find())
-
-        # DAILY stats
-        daily_new_users = users_col.count_documents({
-            "joined_at": {"$gte": since}
-        })
-
-        daily_downloads = movies_col.count_documents({
-            "last_download": {"$gte": since}
-        })
-
-        text = (
-            "📊 **Daily & Total Statistics**\n\n"
-            f"👤 New users today: {daily_new_users}\n"
-            f"⬇ Downloads today: {daily_downloads}\n\n"
-            f"👥 Total users: {total_users}\n"
-            f"🎬 Total movies: {total_movies}\n"
-            f"⬇ Total downloads: {total_downloads}\n\n"
-            "⏰ Time: 16:00 UTC"
+    results = []
+    for m in movies:
+        # Kinoning birinchi qatorini nom sifatida olamiz
+        movie_title = m['title'].split('\n')[0]
+        
+        results.append(
+            InlineQueryResultArticle(
+                title=f"🎬 {movie_title}",
+                description=f"🔑 Kod: {m['code']} | 📥 Yuklangan: {m.get('downloads', 0)} marta",
+                input_message_content=InputTextMessageContent(
+                    f"🎬 <b>{m['title']}</b>\n\n"
+                    f"🔑 <b>Film kodi:</b> <code>{m['code']}</code>\n"
+                    f"🤖 <b>Botimiz:</b> @{bot_username}"
+                ),
+                thumb_url="https://img.icons8.com/fluency/48/movie.png",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎬 Kinoni ko'rish", url=f"https://t.me/{bot_username}?start={m['code']}")]
+                ])
+            )
         )
 
-        await app.send_message(
-            chat_id=MOVIE_CHANNEL,
-            text=text
-        )
+    await query.answer(results, cache_time=5)    
 
-    except Exception as e:
-        print("❌ Failed to send daily stats:", e)
+# ==========================================
+#                RUN BOT
+# ==========================================
 
-
-#=====Scheduler======#
-
-scheduler = AsyncIOScheduler(timezone="UTC")
-
-scheduler.add_job(
-    send_daily_stats,
-    trigger="cron",
-    hour=16,
-    minute=0
-)
-
-async def main():
-    await app.start()
+async def run():
+    # Schedulerni ishga tushiramiz
     scheduler.start()
-    print("🤖 Bot started")
-    print("⏰ Scheduler started")
+    
+    # 🌟 HAFTALIK TAVSIYANOMA JOBINI SHU YERDA QO'SHAMIZ:
+    # Yakshanba kuni soat 20:00 da send_weekly_highlights funksiyasini chaqiradi
+    scheduler.add_job(
+        send_weekly_highlights, 
+        "cron", 
+        day_of_week="sun", 
+        hour=20, 
+        minute=0
+    )
+    
+    await app.start()
+    print("Bot muvaffaqiyatli ishga tushdi!")
     await idle()
 
-
-# ===== RUN =====
-
-print("🤖 Movie bot running...")
-app.run()
+if __name__ == "__main__":
+    app.run(run())
