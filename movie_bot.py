@@ -22,6 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
 BOT_TOKEN = "8509897503:AAE54so0a3oUImP9psT_-3IpETGCogo_c-A"
+# BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -183,7 +184,7 @@ def get_config():
             "type": "bot_config",
             "mandatory_channels": [
                 {"id": "@TG_Manager_uz", "name": "✨ TG Manager Uz", "link": "https://t.me/TG_Manager_uz"},
-                {"id": "@TG_Manager_uz", "name": "🎬 Zayafka Kanali", "link": "https://t.me/hshhshshshdgegeuejje"}
+                {"id": "@hshhshshshdgegeuejje", "name": "🎬 Zayafka Kanali", "link": "https://t.me/hshhshshshdgegeuejje"}
             ],
             "main_admin": 5014031582, # Siz aytgan boshlang'ich ID
             "admin_ids": [] # Yordamchi adminlar hozircha bo'sh
@@ -435,7 +436,9 @@ async def get_sub_keyboard(client, user_id):
     return InlineKeyboardMarkup(keyboard)
 
 async def handle_movie_delivery(client, user_id, movie_code):
-    """Kinoni qidirish va yuborish (Tugmalar bilan)"""
+    """Kinoni qidirish va yuborish (Universal xavfsiz variant)"""
+    
+    # 1. Bazadan qidirish
     movie = movies_col.find_one({
         "$or": [
             {"code": movie_code},
@@ -443,22 +446,53 @@ async def handle_movie_delivery(client, user_id, movie_code):
         ]
     })
     
-    if movie:
-        # Tugmalarni yasash (Insta link bo'lsa parcha tugmasi ham chiqadi)
-        kb = movie_extra_kb(
-            code=movie['code'], 
-            is_admin=is_admin(user_id), 
-            insta_link=movie.get('insta_link')
-        )
-        
+    if not movie:
+        return False
+
+    # 2. O'zgaruvchilarni tayyorlash
+    caption_text = f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
+    kb = movie_extra_kb(
+        code=movie['code'], 
+        is_admin=is_admin(user_id), 
+        insta_link=movie.get('insta_link')
+    )
+
+    # 3. Yuborishga urinish
+    try:
+        # A) Birinchi urinish: file_id orqali (tezkor)
         await client.send_video(
             chat_id=user_id,
             video=movie['file_id'],
-            caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>",
-            reply_markup=kb # Tugmalar shu yerda qo'shiladi
+            caption=caption_text,
+            reply_markup=kb
         )
         movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
         return True
+
+    except Exception as e:
+        # B) Ikkinchi urinish: Agar file_id ishlamasa (masalan yangi bot ochgan bo'lsangiz)
+        print(f"DEBUG: File ID ishlamadi, Message ID tekshirilmoqda... Xato: {e}")
+        
+        if "message_id" in movie and movie["message_id"]:
+            try:
+                # Kanalning o'zidan nusxa olib beradi
+                await client.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=SAVED_MOVIE,
+                    message_id=int(movie["message_id"]),
+                    caption=caption_text,
+                    reply_markup=kb
+                )
+                movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
+                return True
+            except Exception as e2:
+                print(f"DEBUG: Zaxira yo'li ham ishlamadi: {e2}")
+                await client.send_message(user_id, "❌ Kechirasiz, kino fayli o'chirilgan yoki topilmadi.")
+                return True
+        else:
+            await client.send_message(user_id, "❌ Fayl ID eskirgan va bazada message_id (zaxira) mavjud emas.")
+            return True
+
     return False
 
 # ==========================================
@@ -1212,21 +1246,48 @@ async def handle_text(client, msg):
         code = int(txt)
         movie = movies_col.find_one({"code": code})
         if movie:
-            # Ham umumiy, ham haftalik yuklashlarni +1 qilamiz
-            movies_col.update_one(
-                {"code": code}, 
-                {"$inc": {"downloads": 1, "weekly_downloads": 1}} 
+            user_id = msg.from_user.id
+            # 1. Kinoni yuborish uchun kerakli ma'lumotlarni tayyorlaymiz
+            caption_text = f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
+            kb = movie_extra_kb(
+                code=movie['code'], 
+                is_admin=is_admin(user_id), 
+                insta_link=movie.get('insta_link')
             )
-            
+
+            # 2. Xatoni ushlash uchun TRY blokini boshlaymiz
             try:
+                # 1-URINISH: file_id orqali (faqat joriy bot uchun ishlaydi)
                 await msg.reply_video(
                     video=movie['file_id'],
-                    caption=caption,
+                    caption=caption_text,
                     reply_markup=kb
                 )
+                movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
+
             except Exception as e:
-                print(f"Video yuborishda xatolik (Kod: {movie['code']}): {e}")
-                await msg.reply_text("❌ Kechirasiz, ushbu video fayli Telegram serverlaridan topilmadi yoki o'chirilgan.")
+                # Agar file_id ishlamasa (MEDIA_EMPTY bo'lsa), shu yerga tushadi
+                print(f"DEBUG: File ID ishlamadi ({e}). Zaxira usuli (Message ID) ishlatiladi.")
+                
+                # 3. ZAXIRA USULI: message_id orqali kanaldan nusxalash
+                if "message_id" in movie and movie["message_id"]:
+                    try:
+                        await client.copy_message(
+                            chat_id=msg.chat.id,
+                            from_chat_id=SAVED_MOVIE,
+                            message_id=int(movie["message_id"]),
+                            caption=caption_text,
+                            reply_markup=kb
+                        )
+                        movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
+                    except Exception as e2:
+                        print(f"DEBUG: Kanalda ham topilmadi: {e2}")
+                        await msg.reply_text("❌ Kechirasiz, kino fayli o'chirilgan.")
+                else:
+                    # Agar bazada message_id bo'lmasa (eski kinolar uchun)
+                    await msg.reply_text("❌ Fayl ID eskirgan va zaxira (message_id) topilmadi.")
+            
+            return # Funksiyani shu yerda tugatamiz
 
 # --- ADMIN APPROVE LOGIC ---
     if uid in approve_wait:
@@ -1621,35 +1682,6 @@ async def all_movies_list(client, msg):
 
         await msg.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
 
-
-
-@app.on_callback_query(filters.regex(r"^showmovie_(\d+)"))
-async def show_movie_by_button(client, cb):
-    movie_code = int(cb.data.split("_")[1])
-    movie = movies_col.find_one({"code": movie_code})
-
-    if not movie:
-        return await cb.answer("Kino topilmadi!", show_alert=True)
-
-    await cb.answer("Kino yuborilmoqda...")
-
-    # Kinoni yuborish (Bitta video yoki guruhli ekanini tekshirish)
-    if movie.get("is_group"):
-        # Guruhli kino bo'lsa, birinchi qismini yoki tanlash menyusini yuboring
-        first_part = movie["file_ids"][0]
-        await client.send_video(
-            cb.from_user.id, 
-            video=first_part, 
-            caption=f"🎬 {movie['title']}\n\n🍿 Bu ko'p qismli kino. Barcha qismlarni bot orqali ko'rishingiz mumkin."
-        )
-    else:
-        # Oddiy bitta videoli kino
-        await client.send_video(
-            cb.from_user.id, 
-            video=movie["file_id"], 
-            caption=f"🎬 {movie['title']}\n\n🔑 Kod: {movie['code']}"
-        )
-
 # ==========================================
 #         AUTO SAVE FROM CHANNEL
 # ==========================================
@@ -1688,17 +1720,23 @@ async def save_movie_from_channel(client, msg):
     ])
 
     # 2. Bazaga saqlash (Aniq fakt: file_id birlikda bo'lishi shart)
-    movies_col.insert_one({
+
+    forward_msg = await msg.copy(SAVED_MOVIE)
+
+    movie_data = {
         "code": new_code, 
         "file_id": msg.video.file_id, 
         "title": caption, 
+        "message_id": forward_msg.id,
         "downloads": 0, 
         "weekly_downloads": 0,
         "genres": found_genres,
         "rating": 0.0,       # O'rtacha ball boshida 0
         "votes_count": 0,    # Ovozlar soni boshida 0
         "total_stars": 0     # Jami yig'ilgan yulduzlar boshida 0
-    })
+    }
+
+    movies_col.insert_one(movie_data)
 
     # 3. Kanalga javob yuborish (Tugmalar bilan)
     await msg.reply(
