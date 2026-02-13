@@ -1218,13 +1218,15 @@ async def handle_text(client, msg):
                 {"$inc": {"downloads": 1, "weekly_downloads": 1}} 
             )
             
-            insta = movie.get("insta_link")
-            await msg.reply_video(
-                video=movie["file_id"],
-                caption=movie["title"],
-                reply_markup=movie_extra_kb(code, is_admin(uid), insta_link=insta)
-            )
-            return
+            try:
+                await msg.reply_video(
+                    video=movie['file_id'],
+                    caption=caption,
+                    reply_markup=kb
+                )
+            except Exception as e:
+                print(f"Video yuborishda xatolik (Kod: {movie['code']}): {e}")
+                await msg.reply_text("❌ Kechirasiz, ushbu video fayli Telegram serverlaridan topilmadi yoki o'chirilgan.")
 
 # --- ADMIN APPROVE LOGIC ---
     if uid in approve_wait:
