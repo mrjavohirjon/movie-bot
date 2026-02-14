@@ -204,75 +204,6 @@ def admin_settings_menu():
 #                HELPERS
 # ==========================================
 
-async def check_force_join(client, msg):
-    uid = msg.from_user.id
-
-    # 1. ADMIN VA VIP TEKSHIRUVI (Imtiyozli foydalanuvchilar)
-    if is_admin(uid):
-        return True
-        
-    user_db_data = users_col.find_one({"user_id": uid})
-    if user_db_data and user_db_data.get("is_vip", False):
-        return True
-
-    # 2. SOZLAMALAR VA SO'ROVLARNI YUKLASH
-    conf = get_config()
-    channels = conf.get("mandatory_channels", [])
-    
-    # Bazadan ushbu user yuborgan pending (kutilayotgan) so'rovlarni olamiz
-    req_data = requests_col.find_one({"user_id": uid})
-    pending_list = req_data.get("pending_channels", []) if req_data else []
-
-    unsubscribed = []
-
-    # 3. KANALLARNI TEKSHIRISH SIKLI
-    for chan in channels:
-        chan_id_str = str(chan["id"])
-        
-        # a) Bazadagi "Join Request" (Pending) yuborilganligini tekshirish
-        if chan_id_str in pending_list:
-            continue # So'rov yuborilgan bo'lsa, bu kanalni o'tkazib yuboramiz
-
-        # b) Haqiqiy a'zolikni API orqali tekshirish
-        try:
-            member = await client.get_chat_member(chan["id"], uid)
-            # Agar foydalanuvchi a'zo, admin yoki ega bo'lsa - o'tkazamiz
-            if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                continue
-            else:
-                unsubscribed.append(chan)
-        except Exception:
-            # User a'zo emas, so'rov yubormagan yoki bot kanalda admin emas
-            unsubscribed.append(chan)
-
-    # 4. NATIJANI QAYTARISH VA TUGMALARNI TARTIB BILAN CHIQARISH
-    if unsubscribed:
-        buttons = []
-        # Tartib raqami bilan (1-kanal, 2-kanal...) tugmalarni yasaymiz
-        for index, ch in enumerate(unsubscribed, start=1):
-            buttons.append([InlineKeyboardButton(text=f"{index}-kanal", url=ch['link'])])
-        
-        buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check")])
-        
-        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling yoki so'rov yuboring:"
-        
-        # Callback (tugma) yoki oddiy xabar ekanligini aniqlaymiz
-        target = msg.message if hasattr(msg, "data") else msg
-        
-        if hasattr(msg, "data"):
-            try:
-                await target.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-            except MessageNotModified:
-                # Agar o'zgarish bo'lmasa (hali a'zo bo'lmagan bo'lsa) alert chiqaramiz
-                await msg.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz yoki so'rov yubormadingiz!", show_alert=True)
-            except Exception as e:
-                print(f"Edit xatosi: {e}")
-        else:
-            await target.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
-        
-        return False
-
-    return True
 
 def get_movie_list(page=1, genre=None):
     """Faqat birinchi qator va kodni ko'rsatish mantiqi"""
@@ -402,21 +333,51 @@ scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 #      YAGONA MAJBURIY OBUNA TIZIMI
 # ==========================================
 
+# 1. Adminlar ro'yxatini CONFIG qismiga chiqaring
+ADMINS = [6117765181, 516345678] # Kerakli ID-larni shu yerga qo'shasiz
+
 async def check_subscription(client, user_id):
-    """Foydalanuvchi bazadagi barcha majburiy kanallarga a'zomi?"""
-    # Bazadan barcha qo'shilgan kanallarni olamiz
-    mandatory_channels = channels_col.find()
+    # ⭐ ADMINLARNI TEKSHIRISH
+    if user_id in ADMINS:
+        return True
+        
+    user_data = await users_col.find_one({"user_id": user_id})
+    if user_data and user_data.get("is_vip"):
+        expiry = user_data.get("vip_expiry")
+        # Agar vaqti belgilanmagan bo'lsa yoki hali tugamagan bo'lsa
+        if not expiry or expiry > datetime.now(UZ_TZ):
+            return True
+        else:
+            # VIP muddati tugagan bo'lsa, uni bazada o'chirib qo'yamiz
+            await users_col.update_one({"user_id": user_id}, {"$set": {"is_vip": False}})
+
+    # ⭐ KANALLARNI TEKSHIRISH (Dinamik ro'yxat)
+    # Bu yerga xohlagancha kanal ID-larini qo'shishingiz mumkin
+    channels = [KINO1CHRA_CHANNEL, -1002283084344] 
     
-    for channel in mandatory_channels:
+    for channel in channels:
         try:
-            member = await client.get_chat_member(channel['chat_id'], user_id)
-            # Agar foydalanuvchi chiqib ketgan bo'lsa yoki haydalgan bo'lsa
+            member = await client.get_chat_member(channel, user_id)
             if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
                 return False
-        except Exception:
-            # Agar bot kanalni topolmasa yoki admin bo'lmasa, uni o'tkazib yubormaymiz
+        except UserNotParticipant:
             return False
+        except Exception as e:
+            # Agar bot kanalga admin bo'lmasa yoki kanal topilmasa, bu kanalni tashlab ketadi
+            continue
     return True
+
+async def get_top_referrals():
+    # Eng ko'p ball to'plagan 10 ta foydalanuvchini olish
+    top_users = users_col.find().sort("referrals", -1).limit(10)
+    # Ularni aylanib chiqib VIP qilish
+    async for user in top_users:
+        await set_weekly_winner_vip(user['user_id'])
+        # G'olibga xushxabar yuborish
+        try:
+            await app.send_message(user['user_id'], "🎁 Tabriklaymiz! Siz haftalik g'olib bo'ldingiz va 1 hafta davomida VIP statusiga ega bo'ldingiz (Obuna so'ralmaydi)!")
+        except:
+            pass
 
 
 async def get_sub_keyboard(client, user_id):
@@ -446,6 +407,14 @@ async def handle_movie_delivery(client, user_id, movie_code):
     })
     
     if not movie:
+        await client.send_message(
+            chat_id=user_id,
+            text=(
+                "❌ **Kino topilmadi!**\n\n"
+                "Iltimos, kodni to'g'ri yozganingizni tekshiring yoki "
+                "@KinoDrift kanalidan qidiring."
+            )
+        )
         return False
 
     # 2. O'zgaruvchilarni tayyorlash
@@ -582,8 +551,6 @@ async def on_start(client, msg):
             )
 
     # Obuna tekshiruvi
-    if not await check_force_join(client, msg):
-        return
 
     if not await check_subscription(client, user_id):
         return await msg.reply_text(
@@ -603,7 +570,7 @@ async def on_start(client, msg):
                 caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}"
             )
     
-    await msg.reply_text(f"Xush kelibsiz, {msg.from_user.mention}!\nKino kodini yuboring.")
+    await msg.reply_text(f"Xush kelibsiz, {msg.from_user.mention}!\n\nKino kodini yuboring yoki pastdagi menyulardan foydalaning: ")
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
@@ -701,7 +668,7 @@ async def check_cb(client, cb):
     user_id = cb.from_user.id
     
     # 1. Obunani tekshiramiz
-    if await check_force_join(client, cb):
+    if await check_subscription(client, cb):
         # ✅ Agar obuna bo'lgan bo'lsa
         await cb.message.delete() # Obuna so'ralgan xabarni o'chiramiz
         
@@ -1260,7 +1227,7 @@ async def handle_text(client, msg):
             # Boshqa statelar (reklama, transfer va hokazo)...
 
     # 2. Keyin oddiy buyruqlarni tekshiramiz
-    if not await check_force_join(client, msg): return
+    if not await check_subscription(client, user_id): return
 
     if txt == "🏆 Leaderboard":
 
@@ -1685,6 +1652,21 @@ async def get_leaderboard_text():
     text += "⏰ <i>Har yakshanba soat 20:00 da yangilanadi.</i>"
     
     return text
+
+
+async def set_weekly_winner_vip(user_id):
+    # Bugungi vaqtga 7 kun qo'shib, tugash vaqtini belgilaymiz
+    expiry_date = datetime.now(UZ_TZ) + timedelta(days=7)
+    
+    await users_col.update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "is_vip": True,
+                "vip_expiry": expiry_date # VIP tugash vaqti
+            }
+        }
+    )
 
 
 @app.on_message(filters.text & filters.private)
