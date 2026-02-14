@@ -22,6 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
 BOT_TOKEN = "8371879333:AAFNNGjZWqXLmxGNlbze6basI87ExZ1ElKI"
+# BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -215,55 +216,56 @@ async def check_force_join(client, msg):
     if user_db_data and user_db_data.get("is_vip", False):
         return True
 
-    # 2. SOZLAMALARNI YUKLASH (Majburiy kanallar ro'yxati)
+    # 2. SOZLAMALAR VA SO'ROVLARNI YUKLASH
     conf = get_config()
     channels = conf.get("mandatory_channels", [])
     
-    if not channels:
-        return True # Agar kanallar sozlanmagan bo'lsa, o'tkazib yuboramiz
+    # Bazadan ushbu user yuborgan pending (kutilayotgan) so'rovlarni olamiz
+    req_data = requests_col.find_one({"user_id": uid})
+    pending_list = req_data.get("pending_channels", []) if req_data else []
 
     unsubscribed = []
 
     # 3. KANALLARNI TEKSHIRISH SIKLI
     for chan in channels:
+        chan_id_str = str(chan["id"])
+        
+        # a) Bazadagi "Join Request" (Pending) yuborilganligini tekshirish
+        if chan_id_str in pending_list:
+            continue # So'rov yuborilgan bo'lsa, bu kanalni o'tkazib yuboramiz
+
+        # b) Haqiqiy a'zolikni API orqali tekshirish
         try:
-            # Haqiqiy a'zolikni API orqali tekshirish
             member = await client.get_chat_member(chan["id"], uid)
-            
-            # Agar foydalanuvchi a'zo emas bo'lsa (left, kicked, etc.)
-            if member.status not in [
-                ChatMemberStatus.MEMBER, 
-                ChatMemberStatus.ADMINISTRATOR, 
-                ChatMemberStatus.OWNER
-            ]:
+            # Agar foydalanuvchi a'zo, admin yoki ega bo'lsa - o'tkazamiz
+            if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                continue
+            else:
                 unsubscribed.append(chan)
         except Exception:
-            # User a'zo emas yoki bot kanalda admin emas (xato bo'lsa a'zo emas deb hisoblaymiz)
+            # User a'zo emas, so'rov yubormagan yoki bot kanalda admin emas
             unsubscribed.append(chan)
 
-    # 4. NATIJANI QAYTARISH
+    # 4. NATIJANI QAYTARISH VA TUGMALARNI TARTIB BILAN CHIQARISH
     if unsubscribed:
         buttons = []
-        # Obuna bo'lmagan kanallar uchun tugmalar yasash
+        # Tartib raqami bilan (1-kanal, 2-kanal...) tugmalarni yasaymiz
         for index, ch in enumerate(unsubscribed, start=1):
             buttons.append([InlineKeyboardButton(text=f"{index}-kanal", url=ch['link'])])
         
         buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check")])
         
-        text = (
-            "<b>👋 Assalomu alaykum!</b>\n\n"
-            "Botdan foydalanish uchun quyidagi homiy kanallarga a'zo bo'ling:"
-        )
+        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling yoki so'rov yuboring:"
         
-        # Callback yoki Message ekanligini aniqlash
+        # Callback (tugma) yoki oddiy xabar ekanligini aniqlaymiz
         target = msg.message if hasattr(msg, "data") else msg
         
         if hasattr(msg, "data"):
             try:
                 await target.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
             except MessageNotModified:
-                # Agar foydalanuvchi tugmani bossa-yu, hali a'zo bo'lmagan bo'lsa
-                await msg.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz!", show_alert=True)
+                # Agar o'zgarish bo'lmasa (hali a'zo bo'lmagan bo'lsa) alert chiqaramiz
+                await msg.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz yoki so'rov yubormadingiz!", show_alert=True)
             except Exception as e:
                 print(f"Edit xatosi: {e}")
         else:
@@ -522,71 +524,28 @@ def movie_found_kb(user_id):
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, msg):
     user_id = msg.from_user.id
-    
-    # 1. BAZAGA RO'YXATGA OLISH (STATISTIKA UCHUN)
-    # Bu qism foydalanuvchi birinchi marta kirsa, uni bazaga qo'shadi.
-    # count_documents({}) endi doim yangi foydalanuvchini ko'rsatadi.
-    res = users_col.update_one(
-        {"user_id": user_id},
-        {
-            "$set": {"last_active": datetime.utcnow()},
-            "$setOnInsert": {
-                "joined_at": datetime.utcnow(),
-                "referrals": 0,
-                "referral_counted": False 
-            }
-        },
-        upsert=True
-    )
 
-    # Yangi user ekanligini aniqlash (Agar upserted_id bo'lsa - demak yangi)
-    is_new_user = res.upserted_id is not None
-
-    # 2. MAJBURIY OBUNA TEKSHIRUVI
     if not await check_force_join(client, msg):
         return
-
+    
+    # 1. OBUNA TEKSHIRUVI (Har doim birinchi!)
     if not await check_subscription(client, user_id):
-        # Obuna bo'lmagan bo'lsa, xabar chiqadi va kod to'xtaydi.
-        # Lekin user yuqorida bazaga qo'shib bo'lindi (statistika uchun).
         return await msg.reply_text(
             "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
             reply_markup=await get_sub_keyboard(client, user_id)
         )
 
-    # 3. LINKNI TAHLIL QILISH (Kino kodi yoki Referal ID)
+    # 2. DEEP LINK TEKSHIRUVI (?start=33 bo'lib kelsa)
     if len(msg.command) > 1:
-        param = msg.command[1]
-        
-        # Avval bu raqamni kino kodi sifatida bazadan qidiramiz
-        movie = movies_col.find_one({"code": param})
-        
-        if movie:
-            # AGAR BU KINO KODI BO'LSA:
-            # Kinoni yuborish mantiqi
-            await msg.reply_cached_media(
-                file_id=movie['file_id'],
-                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}"
-            )
-        if len(msg.command) > 1:
-            param = msg.command[1]
+        movie_code = msg.command[1]
+        if await handle_movie_delivery(client, user_id, movie_code):
+            return # Kino yuborildi, funksiya tugadi
 
-            # A) Avval bu parametrni kino kodi sifatida tekshiramiz
-            movie_sent = await handle_movie_delivery(client, user_id, param)
-
-            # B) Agar kino topilmasa va bu raqam bo'lsa, referal sifatida ko'ramiz
-            if not movie_sent and param.isdigit() and is_new_user:
-                ref_id = int(param)
-                # O'zini o'zi taklif qilmaganini tekshirish
-                if ref_id != user_id:
-                    users_col.update_one({"user_id": ref_id}, {"$inc": {"referrals": 1}})
-                    try:
-                        await client.send_message(ref_id, "🎉 Havolangiz orqali yangi a'zo qo'shildi!")
-                    except:
-                        pass
-        else:
-            # Oddiy start xabari
-            await msg.reply_text(f"👋 Salom {msg.from_user.mention}!\nKino kodini yuboring yoki izlashdan foydalaning.")
+    # 3. ODDIY START (Hech qanday kodsiz kirsa)
+    await msg.reply_text(
+        f"Assalomu alaykum {msg.from_user.first_name} !\n\nKino kodini yuboring yoki menyudan foydalaning:",
+        reply_markup=user_menu(user_id)
+    )
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
@@ -682,6 +641,30 @@ async def on_check_sub(client, query):
 # ==========================================
 #               HANDLERS
 # ==========================================
+
+@app.on_message(filters.command("start"))
+async def start(client, msg):
+    user = msg.from_user
+    if not await check_force_join(client, msg):
+        return
+    
+    # VIP Referral System
+    if len(msg.command) > 1 and msg.command[1].isdigit():
+        ref_id = int(msg.command[1])
+        if ref_id != user.id and not users_col.find_one({"user_id": user.id}):
+            users_col.update_one({"user_id": ref_id}, {"$inc": {"referrals": 1}})
+            try:
+                await client.send_message(ref_id, "🎉 Do'stingiz qo'shildi! Sizga 1 ta so'rov imkoniyati berildi.")
+            except:
+                pass
+
+    users_col.update_one(
+        {"user_id": user.id},
+        {"$set": {"last_active": datetime.utcnow()},
+         "$setOnInsert": {"joined_at": datetime.utcnow(), "referrals": 0}},
+        upsert=True
+    )
+    await msg.reply(f"👋 <b>Assalomu alaykum {user.first_name}!</b>\n\nKino kodini yuboring yoki quyidagi Menyudan foydalaning.", reply_markup=user_menu(user.id))
 
 
 @app.on_callback_query(filters.regex("^check$"))
@@ -1593,10 +1576,6 @@ async def handle_text(client, msg):
                 t_line = m['title'].split('\n')[0]
                 res_text += f"🎬 {t_line}\n🔑 Kod: <code>{m['code']}</code>\n\n"
             return await msg.reply(res_text)
-        else:
-            return await msg.reply(
-                "✍️ Bu kino bazadan topilmadi, iltimos boshqa kod yuboring : "
-            )
         # Agar topilmasa, hech narsa qilmaydi yoki "Topilmadi" deb qaytaradi
 
 #========Referal======#
