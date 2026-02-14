@@ -21,8 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAFNNGjZWqXLmxGNlbze6basI87ExZ1ElKI"
-# BOT_TOKEN = "1656204938:AAGeFmU573ZPNu-bAkPmuCGF7t_ty7CWoQE"
+BOT_TOKEN = "8371879333:AAFkdUHcSjvHHOMOKDKS9anQK5lOP7JSafI"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -524,28 +523,81 @@ def movie_found_kb(user_id):
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, msg):
     user_id = msg.from_user.id
+    
+    # 1. BAZAGA RO'YXATGA OLISH (STATISTIKA UCHUN)
+    res = users_col.update_one(
+        {"user_id": user_id},
+        {
+            "$set": {"last_active": datetime.utcnow()},
+            "$setOnInsert": {
+                "joined_at": datetime.utcnow(),
+                "referrals": 0,
+                "referred_by": None, # Taklif qilgan odam ID si
+                "bonus_given": False # Ball berildimi?
+            }
+        },
+        upsert=True
+    )
 
+    is_new_user = res.upserted_id is not None
+    param = msg.command[1] if len(msg.command) > 1 else None
+
+    # REFERAL ID NI SAQLAB QO'YISH (Lekin ball bermaslik)
+    if is_new_user and param and param.isdigit():
+        ref_id = int(param)
+        movie = movies_col.find_one({"code": param})
+        # Agar bu kino kodi bo'lmasa va o'ziga o'zi referal bo'lmasa
+        if not movie and ref_id != user_id:
+            users_col.update_one(
+                {"user_id": user_id},
+                {"$set": {"referred_by": ref_id}}
+            )
+
+    # 2. MAJBURIY OBUNA TEKSHIRUVI (Obuna ballidan oldinga o'tdi)
     if not await check_force_join(client, msg):
         return
-    
-    # 1. OBUNA TEKSHIRUVI (Har doim birinchi!)
+
     if not await check_subscription(client, user_id):
         return await msg.reply_text(
             "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
             reply_markup=await get_sub_keyboard(client, user_id)
         )
 
-    # 2. DEEP LINK TEKSHIRUVI (?start=33 bo'lib kelsa)
-    if len(msg.command) > 1:
-        movie_code = msg.command[1]
-        if await handle_movie_delivery(client, user_id, movie_code):
-            return # Kino yuborildi, funksiya tugadi
+    # 3. OBUNA TASDIQLANGANIDAN KEYIN REFERALGA BALL BERISH
+    user_data = users_col.find_one({"user_id": user_id})
+    if user_data.get("referred_by") and not user_data.get("bonus_given"):
+        inviter_id = user_data["referred_by"]
+        
+        # Taklif qilgan odamga ball qo'shish
+        users_col.update_one(
+            {"user_id": inviter_id},
+            {"$inc": {"referrals": 1}}
+        )
+        # Bonus berildi deb belgilash (qayta start bosganda ball bermaslik uchun)
+        users_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"bonus_given": True}}
+        )
+        
+        # Taklif qilgan odamga xabar yuborish
+        try:
+            await client.send_message(
+                inviter_id, 
+                "🎉 Tabriklaymiz! Siz taklif qilgan do'stingiz obuna bo'ldi va sizga 1 ball berildi."
+            )
+        except:
+            pass
 
-    # 3. ODDIY START (Hech qanday kodsiz kirsa)
-    await msg.reply_text(
-        f"Assalomu alaykum {msg.from_user.first_name} !\n\nKino kodini yuboring yoki menyudan foydalaning:",
-        reply_markup=user_menu(user_id)
-    )
+    # 4. KINO YOKI ODDIY START XABARI
+    if param:
+        movie = movies_col.find_one({"code": param})
+        if movie:
+            return await msg.reply_cached_media(
+                file_id=movie['file_id'],
+                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}"
+            )
+    
+    await msg.reply_text(f"Xush kelibsiz, {msg.from_user.mention}!\nKino kodini yuboring.")
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
@@ -641,30 +693,6 @@ async def on_check_sub(client, query):
 # ==========================================
 #               HANDLERS
 # ==========================================
-
-@app.on_message(filters.command("start"))
-async def start(client, msg):
-    user = msg.from_user
-    if not await check_force_join(client, msg):
-        return
-    
-    # VIP Referral System
-    if len(msg.command) > 1 and msg.command[1].isdigit():
-        ref_id = int(msg.command[1])
-        if ref_id != user.id and not users_col.find_one({"user_id": user.id}):
-            users_col.update_one({"user_id": ref_id}, {"$inc": {"referrals": 1}})
-            try:
-                await client.send_message(ref_id, "🎉 Do'stingiz qo'shildi! Sizga 1 ta so'rov imkoniyati berildi.")
-            except:
-                pass
-
-    users_col.update_one(
-        {"user_id": user.id},
-        {"$set": {"last_active": datetime.utcnow()},
-         "$setOnInsert": {"joined_at": datetime.utcnow(), "referrals": 0}},
-        upsert=True
-    )
-    await msg.reply(f"👋 <b>Assalomu alaykum {user.first_name}!</b>\n\nKino kodini yuboring yoki quyidagi Menyudan foydalaning.", reply_markup=user_menu(user.id))
 
 
 @app.on_callback_query(filters.regex("^check$"))
@@ -1576,6 +1604,10 @@ async def handle_text(client, msg):
                 t_line = m['title'].split('\n')[0]
                 res_text += f"🎬 {t_line}\n🔑 Kod: <code>{m['code']}</code>\n\n"
             return await msg.reply(res_text)
+        else:
+            return await msg.reply(
+                "✍️ Bu kino bazadan topilmadi, iltimos boshqa kod yuboring : "
+            )
         # Agar topilmasa, hech narsa qilmaydi yoki "Topilmadi" deb qaytaradi
 
 #========Referal======#
