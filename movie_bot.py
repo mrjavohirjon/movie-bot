@@ -21,7 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8509897503:AAHrsJxHjIEmwTR80qFH0fBWSUCLXgc5ZQc"
+BOT_TOKEN = "8371879333:AAGbFWjB14AQF_BSvc4LmZZgDtd7OUbGlMA"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -522,79 +522,75 @@ def movie_found_kb(user_id):
 
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, msg):
-
-    user = msg.from_user
-    user_id = user.id
-
-    if not await check_force_join(client, msg):
-        return
+    user_id = msg.from_user.id
     
-    # 1. OBUNA TEKSHIRUVI (Har doim birinchi!)
-    if not await check_subscription(client, user_id):
-        return await msg.reply_text(
-            "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
-            reply_markup=await get_sub_keyboard(client, user_id)
-        )
-
-    ref_id = None
-
-    # 🔗 deep linkdan referral olish
-    if len(msg.command) > 1 and msg.command[1].isdigit():
-        ref_id = int(msg.command[1])
-
-    # ✅ USERNI SAQLASH (faqat birinchi kirishda referred_by yoziladi)
-    users_col.update_one(
+    # 1. BAZAGA RO'YXATGA OLISH (STATISTIKA UCHUN)
+    # Bu qism foydalanuvchi birinchi marta kirsa, uni bazaga qo'shadi.
+    # count_documents({}) endi doim yangi foydalanuvchini ko'rsatadi.
+    res = users_col.update_one(
         {"user_id": user_id},
         {
-            "$set": {
-                "last_active": datetime.utcnow()
-            },
+            "$set": {"last_active": datetime.utcnow()},
             "$setOnInsert": {
                 "joined_at": datetime.utcnow(),
                 "referrals": 0,
-                "referred_by": ref_id   # ⭐ SHU YERGA QO‘YILADI
+                "referral_counted": False 
             }
         },
         upsert=True
     )
 
-    # ✅ Agar user yangi bo‘lsa referal +1 qilish
-    if ref_id and ref_id != user_id:
+    # Yangi user ekanligini aniqlash (Agar upserted_id bo'lsa - demak yangi)
+    is_new_user = res.upserted_id is not None
 
-        user_data = users_col.find_one({"user_id": user_id})
+    # 2. MAJBURIY OBUNA TEKSHIRUVI
+    if not await check_force_join(client, msg):
+        return
 
-        # ⭐ faqat bir marta ishlaydi
-        if user_data and not user_data.get("referral_counted"):
+    if not await check_subscription(client, user_id):
+        # Obuna bo'lmagan bo'lsa, xabar chiqadi va kod to'xtaydi.
+        # Lekin user yuqorida bazaga qo'shib bo'lindi (statistika uchun).
+        return await msg.reply_text(
+            "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
+            reply_markup=await get_sub_keyboard(client, user_id)
+        )
 
-            users_col.update_one(
-                {"user_id": ref_id},
-                {"$inc": {"referrals": 1}}
-            )
-
-            users_col.update_one(
-                {"user_id": user_id},
-                {"$set": {"referral_counted": True}}
-            )
-
-            try:
-                await client.send_message(
-                    ref_id,
-                    "🎉 Sizning havolangiz orqali yangi foydalanuvchi qo‘shildi!"
-                )
-            except:
-                pass
-
-    # 2. DEEP LINK TEKSHIRUVI (?start=33 bo'lib kelsa)
+    # 3. LINKNI TAHLIL QILISH (Kino kodi yoki Referal ID)
     if len(msg.command) > 1:
-        movie_code = msg.command[1]
-        if await handle_movie_delivery(client, user_id, movie_code):
-            return # Kino yuborildi, funksiya tugadi
-
-    # 3. ODDIY START (Hech qanday kodsiz kirsa)
-    await msg.reply_text(
-        f"Assalomu alaykum {msg.from_user.first_name} !\n\nKino kodini yuboring yoki menyudan foydalaning:",
-        reply_markup=user_menu(user_id)
-    )
+        param = msg.command[1]
+        
+        # Avval bu raqamni kino kodi sifatida bazadan qidiramiz
+        movie = movies_col.find_one({"code": param})
+        
+        if movie:
+            # AGAR BU KINO KODI BO'LSA:
+            # Kinoni yuborish mantiqi
+            await msg.reply_cached_media(
+                file_id=movie['file_id'],
+                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}"
+            )
+        elif param.isdigit() and is_new_user:
+            # AGAR KINO TOPILMASA VA BU RAQAM BO'LSA + USER YANGI BO'LSA:
+            # Demak bu Referal ID
+            ref_id = int(param)
+            
+            # O'ziga o'zi referal bo'lishini oldini olish
+            if ref_id != user_id:
+                # Taklif qilgan odamga ball berish
+                users_col.update_one(
+                    {"user_id": ref_id},
+                    {"$inc": {"referrals": 1}}
+                )
+                try:
+                    await client.send_message(
+                        ref_id, 
+                        "🎉 Sizning havolangiz orqali yangi foydalanuvchi obuna bo'ldi!"
+                    )
+                except:
+                    pass
+    else:
+        # Oddiy /start bosilganda
+        await msg.reply_text(f"Xush kelibsiz, {msg.from_user.mention}!\nKino kodini yuboring.")
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
@@ -1601,6 +1597,10 @@ async def handle_text(client, msg):
                 t_line = m['title'].split('\n')[0]
                 res_text += f"🎬 {t_line}\n🔑 Kod: <code>{m['code']}</code>\n\n"
             return await msg.reply(res_text)
+        else:
+            return await msg.reply(
+                "✍️ Bu kino bazadan topilmadi, iltimos boshqa kod yuboring : "
+            )
         # Agar topilmasa, hech narsa qilmaydi yoki "Topilmadi" deb qaytaradi
 
 #========Referal======#
