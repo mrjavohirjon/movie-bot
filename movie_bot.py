@@ -522,7 +522,9 @@ def movie_found_kb(user_id):
 
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, msg):
-    user_id = msg.from_user.id
+
+    user = msg.from_user
+    user_id = user.id
 
     if not await check_force_join(client, msg):
         return
@@ -533,6 +535,54 @@ async def on_start(client, msg):
             "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
             reply_markup=await get_sub_keyboard(client, user_id)
         )
+
+    ref_id = None
+
+    # 🔗 deep linkdan referral olish
+    if len(msg.command) > 1 and msg.command[1].isdigit():
+        ref_id = int(msg.command[1])
+
+    # ✅ USERNI SAQLASH (faqat birinchi kirishda referred_by yoziladi)
+    users_col.update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "last_active": datetime.utcnow()
+            },
+            "$setOnInsert": {
+                "joined_at": datetime.utcnow(),
+                "referrals": 0,
+                "referred_by": ref_id   # ⭐ SHU YERGA QO‘YILADI
+            }
+        },
+        upsert=True
+    )
+
+    # ✅ Agar user yangi bo‘lsa referal +1 qilish
+    if ref_id and ref_id != user_id:
+
+        user_data = users_col.find_one({"user_id": user_id})
+
+        # ⭐ faqat bir marta ishlaydi
+        if user_data and not user_data.get("referral_counted"):
+
+            users_col.update_one(
+                {"user_id": ref_id},
+                {"$inc": {"referrals": 1}}
+            )
+
+            users_col.update_one(
+                {"user_id": user_id},
+                {"$set": {"referral_counted": True}}
+            )
+
+            try:
+                await client.send_message(
+                    ref_id,
+                    "🎉 Sizning havolangiz orqali yangi foydalanuvchi qo‘shildi!"
+                )
+            except:
+                pass
 
     # 2. DEEP LINK TEKSHIRUVI (?start=33 bo'lib kelsa)
     if len(msg.command) > 1:
@@ -640,30 +690,6 @@ async def on_check_sub(client, query):
 # ==========================================
 #               HANDLERS
 # ==========================================
-
-@app.on_message(filters.command("start"))
-async def start(client, msg):
-    user = msg.from_user
-    if not await check_force_join(client, msg):
-        return
-    
-    # VIP Referral System
-    if len(msg.command) > 1 and msg.command[1].isdigit():
-        ref_id = int(msg.command[1])
-        if ref_id != user.id and not users_col.find_one({"user_id": user.id}):
-            users_col.update_one({"user_id": ref_id}, {"$inc": {"referrals": 1}})
-            try:
-                await client.send_message(ref_id, "🎉 Do'stingiz qo'shildi! Sizga 1 ta so'rov imkoniyati berildi.")
-            except:
-                pass
-
-    users_col.update_one(
-        {"user_id": user.id},
-        {"$set": {"last_active": datetime.utcnow()},
-         "$setOnInsert": {"joined_at": datetime.utcnow(), "referrals": 0}},
-        upsert=True
-    )
-    await msg.reply(f"👋 <b>Assalomu alaykum {user.first_name}!</b>\n\nKino kodini yuboring yoki quyidagi Menyudan foydalaning.", reply_markup=user_menu(user.id))
 
 
 @app.on_callback_query(filters.regex("^check$"))
