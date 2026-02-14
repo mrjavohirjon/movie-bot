@@ -21,7 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAFkdUHcSjvHHOMOKDKS9anQK5lOP7JSafI"
+BOT_TOKEN = "8371879333:AAGfNkGgMFhhe19g6zyqDABBDrvfS3IyN0Q"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -337,34 +337,25 @@ scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 ADMINS = [6117765181, 516345678] # Kerakli ID-larni shu yerga qo'shasiz
 
 async def check_subscription(client, user_id):
-    # ⭐ ADMINLARNI TEKSHIRISH
+    # ADMINLARNI TEKSHIRISH
     if user_id in ADMINS:
         return True
         
-    user_data = await users_col.find_one({"user_id": user_id})
-    if user_data and user_data.get("is_vip"):
-        expiry = user_data.get("vip_expiry")
-        # Agar vaqti belgilanmagan bo'lsa yoki hali tugamagan bo'lsa
-        if not expiry or expiry > datetime.now(UZ_TZ):
-            return True
-        else:
-            # VIP muddati tugagan bo'lsa, uni bazada o'chirib qo'yamiz
-            await users_col.update_one({"user_id": user_id}, {"$set": {"is_vip": False}})
+    # VIP TEKSHIRISH (await olib tashlandi!)
+    user_data = users_col.find_one({"user_id": user_id})
+    if user_data and user_data.get("is_vip", False):
+        return True
 
-    # ⭐ KANALLARNI TEKSHIRISH (Dinamik ro'yxat)
-    # Bu yerga xohlagancha kanal ID-larini qo'shishingiz mumkin
-    channels = [KINO1CHRA_CHANNEL, -1002283084344] 
+    # KANALLARNI TEKSHIRISH
+    channels = [KINO1CHRA_CHANNEL, -1002283084344] # O'z kanallaringiz ID-si
     
     for channel in channels:
         try:
             member = await client.get_chat_member(channel, user_id)
             if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
                 return False
-        except UserNotParticipant:
+        except Exception:
             return False
-        except Exception as e:
-            # Agar bot kanalga admin bo'lmasa yoki kanal topilmasa, bu kanalni tashlab ketadi
-            continue
     return True
 
 async def get_top_referrals():
@@ -396,16 +387,18 @@ async def get_sub_keyboard(client, user_id):
     return InlineKeyboardMarkup(keyboard)
 
 async def handle_movie_delivery(client, user_id, movie_code):
-    """Kinoni qidirish va yuborish (Universal xavfsiz variant)"""
+    """Kinoni qidirish va yuborish (Sinxron PyMongo uchun xavfsiz variant)"""
     
-    # 1. Bazadan qidirish
+    # 1. Bazadan qidirish (await olib tashlandi!)
+    # movies_col o'zgaruvchisi kodingizda qanday nomlangan bo'lsa shuni ishlating
     movie = movies_col.find_one({
         "$or": [
-            {"code": movie_code},
+            {"code": str(movie_code)},
             {"code": int(movie_code) if str(movie_code).isdigit() else None}
         ]
     })
     
+    # KINO TOPILMASA SHU XABARNI YUBORAMIZ
     if not movie:
         await client.send_message(
             chat_id=user_id,
@@ -418,7 +411,9 @@ async def handle_movie_delivery(client, user_id, movie_code):
         return False
 
     # 2. O'zgaruvchilarni tayyorlash
-    caption_text = f" <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
+    caption_text = f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>"
+    
+    # Keyboard funksiyasini chaqiramiz
     kb = movie_extra_kb(
         code=movie['code'], 
         is_admin=is_admin(user_id), 
@@ -427,23 +422,23 @@ async def handle_movie_delivery(client, user_id, movie_code):
 
     # 3. Yuborishga urinish
     try:
-        # A) Birinchi urinish: file_id orqali (tezkor)
+        # A) Birinchi urinish: file_id orqali
         await client.send_video(
             chat_id=user_id,
             video=movie['file_id'],
             caption=caption_text,
             reply_markup=kb
         )
+        # Sanoqni yangilash (await-siz)
         movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
         return True
 
     except Exception as e:
-        # B) Ikkinchi urinish: Agar file_id ishlamasa (masalan yangi bot ochgan bo'lsangiz)
-        print(f"DEBUG: File ID ishlamadi, Message ID tekshirilmoqda... Xato: {e}")
+        print(f"DEBUG: File ID xatosi: {e}")
         
+        # B) Ikkinchi urinish: Message ID orqali nusxa olish
         if "message_id" in movie and movie["message_id"]:
             try:
-                # Kanalning o'zidan nusxa olib beradi
                 await client.copy_message(
                     chat_id=user_id,
                     from_chat_id=SAVED_MOVIE,
@@ -454,11 +449,10 @@ async def handle_movie_delivery(client, user_id, movie_code):
                 movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
                 return True
             except Exception as e2:
-                print(f"DEBUG: Zaxira yo'li ham ishlamadi: {e2}")
                 await client.send_message(user_id, "❌ Kechirasiz, kino fayli o'chirilgan yoki topilmadi.")
                 return True
         else:
-            await client.send_message(user_id, "❌ Fayl ID eskirgan va bazada message_id (zaxira) mavjud emas.")
+            await client.send_message(user_id, "❌ Fayl ID eskirgan va zaxira nusxa mavjud emas.")
             return True
 
     return False
