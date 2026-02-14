@@ -21,7 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAGbFWjB14AQF_BSvc4LmZZgDtd7OUbGlMA"
+BOT_TOKEN = "8509897503:AAHrsJxHjIEmwTR80qFH0fBWSUCLXgc5ZQc"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -215,56 +215,55 @@ async def check_force_join(client, msg):
     if user_db_data and user_db_data.get("is_vip", False):
         return True
 
-    # 2. SOZLAMALAR VA SO'ROVLARNI YUKLASH
+    # 2. SOZLAMALARNI YUKLASH (Majburiy kanallar ro'yxati)
     conf = get_config()
     channels = conf.get("mandatory_channels", [])
     
-    # Bazadan ushbu user yuborgan pending (kutilayotgan) so'rovlarni olamiz
-    req_data = requests_col.find_one({"user_id": uid})
-    pending_list = req_data.get("pending_channels", []) if req_data else []
+    if not channels:
+        return True # Agar kanallar sozlanmagan bo'lsa, o'tkazib yuboramiz
 
     unsubscribed = []
 
     # 3. KANALLARNI TEKSHIRISH SIKLI
     for chan in channels:
-        chan_id_str = str(chan["id"])
-        
-        # a) Bazadagi "Join Request" (Pending) yuborilganligini tekshirish
-        if chan_id_str in pending_list:
-            continue # So'rov yuborilgan bo'lsa, bu kanalni o'tkazib yuboramiz
-
-        # b) Haqiqiy a'zolikni API orqali tekshirish
         try:
+            # Haqiqiy a'zolikni API orqali tekshirish
             member = await client.get_chat_member(chan["id"], uid)
-            # Agar foydalanuvchi a'zo, admin yoki ega bo'lsa - o'tkazamiz
-            if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                continue
-            else:
+            
+            # Agar foydalanuvchi a'zo emas bo'lsa (left, kicked, etc.)
+            if member.status not in [
+                ChatMemberStatus.MEMBER, 
+                ChatMemberStatus.ADMINISTRATOR, 
+                ChatMemberStatus.OWNER
+            ]:
                 unsubscribed.append(chan)
         except Exception:
-            # User a'zo emas, so'rov yubormagan yoki bot kanalda admin emas
+            # User a'zo emas yoki bot kanalda admin emas (xato bo'lsa a'zo emas deb hisoblaymiz)
             unsubscribed.append(chan)
 
-    # 4. NATIJANI QAYTARISH VA TUGMALARNI TARTIB BILAN CHIQARISH
+    # 4. NATIJANI QAYTARISH
     if unsubscribed:
         buttons = []
-        # Tartib raqami bilan (1-kanal, 2-kanal...) tugmalarni yasaymiz
+        # Obuna bo'lmagan kanallar uchun tugmalar yasash
         for index, ch in enumerate(unsubscribed, start=1):
             buttons.append([InlineKeyboardButton(text=f"{index}-kanal", url=ch['link'])])
         
         buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check")])
         
-        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling yoki so'rov yuboring:"
+        text = (
+            "<b>👋 Assalomu alaykum!</b>\n\n"
+            "Botdan foydalanish uchun quyidagi homiy kanallarga a'zo bo'ling:"
+        )
         
-        # Callback (tugma) yoki oddiy xabar ekanligini aniqlaymiz
+        # Callback yoki Message ekanligini aniqlash
         target = msg.message if hasattr(msg, "data") else msg
         
         if hasattr(msg, "data"):
             try:
                 await target.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
             except MessageNotModified:
-                # Agar o'zgarish bo'lmasa (hali a'zo bo'lmagan bo'lsa) alert chiqaramiz
-                await msg.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz yoki so'rov yubormadingiz!", show_alert=True)
+                # Agar foydalanuvchi tugmani bossa-yu, hali a'zo bo'lmagan bo'lsa
+                await msg.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz!", show_alert=True)
             except Exception as e:
                 print(f"Edit xatosi: {e}")
         else:
@@ -569,28 +568,25 @@ async def on_start(client, msg):
                 file_id=movie['file_id'],
                 caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}"
             )
-        elif param.isdigit() and is_new_user:
-            # AGAR KINO TOPILMASA VA BU RAQAM BO'LSA + USER YANGI BO'LSA:
-            # Demak bu Referal ID
-            ref_id = int(param)
-            
-            # O'ziga o'zi referal bo'lishini oldini olish
-            if ref_id != user_id:
-                # Taklif qilgan odamga ball berish
-                users_col.update_one(
-                    {"user_id": ref_id},
-                    {"$inc": {"referrals": 1}}
-                )
-                try:
-                    await client.send_message(
-                        ref_id, 
-                        "🎉 Sizning havolangiz orqali yangi foydalanuvchi obuna bo'ldi!"
-                    )
-                except:
-                    pass
-    else:
-        # Oddiy /start bosilganda
-        await msg.reply_text(f"Xush kelibsiz, {msg.from_user.mention}!\nKino kodini yuboring.")
+        if len(msg.command) > 1:
+            param = msg.command[1]
+
+            # A) Avval bu parametrni kino kodi sifatida tekshiramiz
+            movie_sent = await handle_movie_delivery(client, user_id, param)
+
+            # B) Agar kino topilmasa va bu raqam bo'lsa, referal sifatida ko'ramiz
+            if not movie_sent and param.isdigit() and is_new_user:
+                ref_id = int(param)
+                # O'zini o'zi taklif qilmaganini tekshirish
+                if ref_id != user_id:
+                    users_col.update_one({"user_id": ref_id}, {"$inc": {"referrals": 1}})
+                    try:
+                        await client.send_message(ref_id, "🎉 Havolangiz orqali yangi a'zo qo'shildi!")
+                    except:
+                        pass
+        else:
+            # Oddiy start xabari
+            await msg.reply_text(f"👋 Salom {msg.from_user.mention}!\nKino kodini yuboring yoki izlashdan foydalaning.")
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
