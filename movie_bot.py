@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAH6HBhVyFA_sMtEAyM5BPNGI_0qFuosT3E"
+BOT_TOKEN = "8371879333:AAF0OTA02dMVzzK87ekjzQyQQcd8eJPpfXE"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -524,62 +524,94 @@ async def give_referral_bonus(client, user_id):
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, msg):
     user_id = msg.from_user.id
-    
-    # Bazaga yozish yoki yangilash
-    res = users_col.update_one(
-        {"user_id": user_id},
-        {
-            "$set": {"last_active": datetime.now(UZ_TZ)},
-            "$setOnInsert": {
-                "joined_at": datetime.now(UZ_TZ),
-                "referrals": 0,
-                "referred_by": None,
-                "bonus_given": False 
-            }
-        },
-        upsert=True
-    )
-
-    is_new_user = res.upserted_id is not None
     param = msg.command[1] if len(msg.command) > 1 else None
+    
+    param_str = str(param) if param else ""
+    param_len = len(param_str)
+    is_new_user = False
 
-    # Referal ID ni saqlash (Ball bermaymiz!)
-    if is_new_user and param and param.isdigit():
-        ref_id = int(param)
-        movie = movies_col.find_one({"code": param})
-        if not movie and ref_id != user_id:
-            users_col.update_one(
-                {"user_id": user_id},
-                {"$set": {"referred_by": ref_id}}
-            )
+    # 1. FAQAT REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10 bo'lsa)
+    # Kino kodi (uzunligi < 10) bo'lsa bu yerda bazaga qo'shilmaydi
+    if param and param_len >= 10:
+        user_in_db = users_col.find_one({"user_id": user_id})
+        if not user_in_db:
+            is_new_user = True
+            users_col.insert_one({
+                "user_id": user_id,
+                "first_name": msg.from_user.first_name,
+                "username": msg.from_user.username,
+                "joined_at": datetime.now(UZ_TZ),
+                "last_active": datetime.now(UZ_TZ),
+                "referrals": 0,
+                "referred_by": int(param) if param.isdigit() else None,
+                "is_vip": False,
+                "bonus_given": False 
+            })
 
+    # 2. ADMIN TEKSHIRUVI
     if is_admin(user_id):
         return await msg.reply(
             f"Salom Admin {msg.from_user.first_name}!\nPanelga xush kelibsiz.",
             reply_markup=admin_menu()
         )
 
-    # Obuna tekshiruvi
-
+    # 3. MAJBURIY OBUNA TEKSHIRUVI
+    # Obuna bo'lmagan bo'lsa, xoh referal, xoh kino bo'lsin - to'xtatiladi
     if not await check_subscription(client, user_id):
         return await msg.reply_text(
             "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
             reply_markup=await get_sub_keyboard(client, user_id)
         )
     
-    # Agar obunadan o'tgan bo'lsa, pastdagi referal funksiyasini chaqiramiz
-    await give_referral_bonus(client, user_id)
+    # 4. OBUNADAN O'TGANDAN KEYIN REFERAL BO'LSA, TAKLIF QILGANGA XABAR BERISH
+    if param and param_len >= 10:
+        user_data = users_col.find_one({"user_id": user_id})
+        # Agar bu yangi user bo'lsa va hali bonus berilmagan bo'lsa
+        if user_data and user_data.get("referred_by") and not user_data.get("bonus_given"):
+            referrer_id = user_data["referred_by"]
+            if referrer_id != user_id:
+                try:
+                    # Taklif qilgan odamga xabar yuborish
+                    await client.send_message(
+                        chat_id=referrer_id,
+                        text=f"🔔 <b>Yangi referal!</b>\n\n<a href='tg://user?id={user_id}'>{msg.from_user.first_name}</a> obuna bo'ldi va statistikangizga qo'shildi!"
+                    )
+                    # Bonus berilganini belgilab qo'yamiz (takrorlanmasligi uchun)
+                    users_col.update_one({"user_id": user_id}, {"$set": {"bonus_given": True}})
+                except:
+                    pass
+            await msg.reply("✅ Taklif muvaffaqiyatli qabul qilindi!")
 
-    # Kino kodi bo'lsa yuborish
-    if param:
-        movie = movies_col.find_one({"code": param})
+    # 5. KINO KODI BO'LSA YUBORISH (Uzunligi < 10)
+    if param and param_len < 10:
+        movie = movies_col.find_one({"code": param_str})
         if movie:
+
+            movies_col.update_one({"code": param_str}, {"$inc": {"downloads": 1}})
+
             return await msg.reply_cached_media(
                 file_id=movie['file_id'],
-                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}"
+                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}\n📥 Yuklangan: {movie.get('downloads', 0) + 1} marta",
+                reply_markup=user_menu()
             )
-    
-    await msg.reply_text(f"Xush kelibsiz, {msg.from_user.mention}!\n\nKino kodini yuboring yoki pastdagi menyulardan foydalaning: ")
+        else:
+            await msg.reply("❌ Afsuski, bu kod bo'yicha kino topilmadi.")
+            return
+
+    # 6. ODDIY START YOKI OBUNADAN KEYINGI HOLAT
+    # Agar user hali bazada bo'lmasa (shunchaki /start bosgan bo'lsa), qo'shish
+    if not users_col.find_one({"user_id": user_id}):
+        users_col.insert_one({
+            "user_id": user_id,
+            "first_name": msg.from_user.first_name,
+            "joined_at": datetime.now(UZ_TZ),
+            "is_vip": False
+        })
+
+    await msg.reply_text(
+        f"Xush kelibsiz, {msg.from_user.mention}!\n\nKino kodini yuboring yoki menyulardan foydalaning:",
+        reply_markup=user_menu()
+    )
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
