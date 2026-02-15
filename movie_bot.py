@@ -551,6 +551,13 @@ async def on_start(client, msg):
     if len(msg.command) > 1:
         param = msg.command[1] # Masalan: "33"
         param_len = len(param)
+
+            # ✅ DEBUG (QAYERDAN TOPILMAYOTGANINI KO'RAMIZ)
+        print("PARAM:", param, type(param))
+        print("SEARCH STRING:", movies_col.find_one({"code": str(param)}))
+
+        if param.isdigit():
+            print("SEARCH INT:", movies_col.find_one({"code": int(param)}))
         
         # BAZADAN QIDIRISH (Ham matn, ham son ko'rinishida tekshiramiz)
         # Chunki bazada '33' yoki 33 bo'lishi mumkin
@@ -947,31 +954,6 @@ async def callback_handler(client, callback_query):
     elif data == "cancel_clear_requests":
         await callback_query.message.edit_text("❌ Tozalash amali bekor qilindi.")
         await callback_query.answer("Bekor qilindi")
-
-@app.on_chat_join_request()
-async def handle_join_request(client, request):
-    user_id = request.from_user.id
-    chat_id = request.chat.id # So'rov yuborilgan kanal ID-si
-    
-    # Bazaga yozamiz: user_id bo'yicha pending_channels ro'yxatiga chat_id ni qo'shamiz
-    requests_col.update_one(
-        {"user_id": user_id},
-        {"$addToSet": {"pending_channels": str(chat_id)}},
-        upsert=True
-    )
-
-@app.on_chat_member_updated()
-async def clear_pending_on_join(client, chat_member_updated):
-    # Faqat yangi a'zo qo'shilganda yoki so'rov tasdiqlanganda ishlaydi
-    if chat_member_updated.new_chat_member and chat_member_updated.new_chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR]:
-        user_id = chat_member_updated.new_chat_member.user.id
-        chat_id = str(chat_member_updated.chat.id)
-        
-        # Bazadagi "pending" ro'yxatidan o'chirish
-        requests_col.update_one(
-            {"user_id": user_id},
-            {"$pull": {"pending_channels": chat_id}}
-        )
 
 # ==========================================
 #                BOT HANDLERS
@@ -1959,4 +1941,3 @@ async def run():
 
 if __name__ == "__main__":
     app.run(run())
-
