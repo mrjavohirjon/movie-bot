@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAFVl-wjRT0SlFo563CR9SpI3Ml8lb_Y2Qo"
+BOT_TOKEN = "8509897503:AAE6c55sDhi0jeK02dN5-WfZxrGCY8lMrDc"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -538,7 +538,7 @@ async def on_start(client, msg):
     is_new_user = False
 
     # 2. REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10)
-    if param_str and param_len >= 10:
+    if param_len >= 10:
         user_in_db = users_col.find_one({"user_id": user_id})
         try:
             referrer_id = int(param_str) # Son ko'rinishiga o'tkazamiz
@@ -574,7 +574,7 @@ async def on_start(client, msg):
         )
     
     # 5. REFERAL XABARNOMASI
-    if param_str and param_len >= 10:
+    if param_len >= 10:
         user_data = users_col.find_one({"user_id": user_id})
         if user_data and user_data.get("referred_by") and not user_data.get("bonus_given"):
             referrer_id = user_data["referred_by"]
@@ -591,7 +591,7 @@ async def on_start(client, msg):
             return # Referal bo'lsa shu yerda to'xtatamiz
 
     # 6. KINO KODI BO'LSA YUBORISH (ID < 10)
-    if param_str and param_len < 10:
+    if param_len < 10:
         movie = movies_col.find_one({"code": param_str})
         try:
 
