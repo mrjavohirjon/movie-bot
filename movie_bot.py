@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8509897503:AAE6c55sDhi0jeK02dN5-WfZxrGCY8lMrDc"
+BOT_TOKEN = "8509897503:AAFLuOZTd57m0Eh5mVi3zb3KGH-gu6LNQS0"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -525,44 +525,35 @@ async def give_referral_bonus(client, user_id):
 async def on_start(client, msg):
     user_id = msg.from_user.id
     
-    # 1. Parametrni olish (Telegram buni "=" siz toza beradi)
-    # Misol: /start 69 bo'lsa, param_str = "69" bo'ladi
-    param_str = msg.command[1] if len(msg.command) > 1 else ""
+    # 1. Parametrni olish va boshidanoq Integerga o'tkazish
+    raw_param = msg.command[1] if len(msg.command) > 1 else ""
+    # Faqat raqamlarni ajratib olamiz
+    param_digits = "".join(filter(str.isdigit, raw_param))
     
-    # Faqat raqamlardan iboratligiga ishonch hosil qilamiz
-    if not param_str.isdigit():
-        # Agar link ichida harf aralash bo'lsa (masalan: ref123)
-        param_str = "".join(filter(str.isdigit, param_str))
-    
-    param_len = len(param_str)
-    is_new_user = False
+    # Parametrni son (int) holatiga o'tkazamiz, agar bo'sh bo'lsa None bo'ladi
+    param_int = int(param_digits) if param_digits else None
+    param_len = len(param_digits)
 
-    # 2. REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10)
-    if param_len >= 10:
+    # 2. REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10 xonali bo'lsa)
+    if param_int and param_len >= 10:
         user_in_db = users_col.find_one({"user_id": user_id})
-        try:
-            referrer_id = int(param_str) # Son ko'rinishiga o'tkazamiz
-            if not user_in_db:
-                is_new_user = True
-                users_col.insert_one({
-                    "user_id": user_id,
-                    "first_name": msg.from_user.first_name,
-                    "username": msg.from_user.username,
-                    "joined_at": datetime.now(UZ_TZ),
-                    "last_active": datetime.now(UZ_TZ),
-                    "referrals": 0,
-                    "referred_by": int(param_str),
-                    "is_vip": False,
-                    "bonus_given": False 
-                })
-        except ValueError:
-            pass
-
+        if not user_in_db:
+            users_col.insert_one({
+                "user_id": user_id,
+                "first_name": msg.from_user.first_name,
+                "username": msg.from_user.username,
+                "joined_at": datetime.now(UZ_TZ),
+                "last_active": datetime.now(UZ_TZ),
+                "referrals": 0,
+                "referred_by": param_int, # Allaqachon integer
+                "is_vip": False,
+                "bonus_given": False 
+            })
 
     # 3. ADMIN TEKSHIRUVI
     if is_admin(user_id):
         return await msg.reply(
-            f"Salom Admin {msg.from_user.first_name}!",
+            f"Salom Admin {msg.from_user.first_name}!\n\nPanelga xush kelibsiz.",
             reply_markup=admin_menu()
         )
 
@@ -573,8 +564,8 @@ async def on_start(client, msg):
             reply_markup=await get_sub_keyboard(client, user_id)
         )
     
-    # 5. REFERAL XABARNOMASI
-    if param_len >= 10:
+    # 5. REFERAL XABARNOMASI (Obunadan o'tgandan keyin)
+    if param_int and param_len >= 10:
         user_data = users_col.find_one({"user_id": user_id})
         if user_data and user_data.get("referred_by") and not user_data.get("bonus_given"):
             referrer_id = user_data["referred_by"]
@@ -588,41 +579,34 @@ async def on_start(client, msg):
                 except:
                     pass
             await msg.reply("✅ Taklif muvaffaqiyatli qabul qilindi!", reply_markup=user_menu())
-            return # Referal bo'lsa shu yerda to'xtatamiz
-
-    # 6. KINO KODI BO'LSA YUBORISH (ID < 10)
-    if param_len < 10:
-        movie = movies_col.find_one({"code": param_str})
-        try:
-
-            movie_code = int(param_str)
-            movie = movies_col.find_one({"code": movie_code})
-
-
-            if movie:
-                # Statistika uchun faqat yuklashni oshiramiz
-                movies_col.update_one({"code": param_str}, {"$inc": {"downloads": 1}})
-                
-                return await msg.reply_cached_media(
-                    file_id=movie['file_id'],
-                    caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}\n📥 Yuklangan: {movie.get('downloads', 0) + 1} marta",
-                    reply_markup=user_menu()
-                )
-            else:
-                await msg.reply("❌ Afsuski, bu kod bo'yicha kino topilmadi.")
-                return
-        except ValueError:
-            await msg.reply("❌ Xato kod yuborildi.")
             return
 
-    # 7. ODDIY START (Bazada bo'lmasa qo'shish)
-    if not users_col.find_one({"user_id": user_id}):
-        users_col.insert_one({
-            "user_id": user_id,
-            "first_name": msg.from_user.first_name,
-            "joined_at": datetime.now(UZ_TZ),
-            "is_vip": False
-        })
+    # 6. KINO KODI BO'LSA YUBORISH (ID < 10 xonali bo'lsa)
+    if param_int and param_len < 10:
+        movie = movies_col.find_one({"code": param_int}) # Integer qidiruv
+        
+        if movie:
+            # downloads sonini oshirish
+            movies_col.update_one({"code": param_int}, {"$inc": {"downloads": 1}})
+            
+            return await msg.reply_cached_media(
+                file_id=movie['file_id'],
+                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}\n📥 Yuklangan: {movie.get('downloads', 0) + 1} marta",
+                reply_markup=user_menu()
+            )
+        else:
+            await msg.reply(f"❌ '{param_int}' kodli kino topilmadi.")
+            return
+
+    # 7. ODDIY START (Hech qanday parametr bo'lmasa)
+    if not param_int:
+        if not users_col.find_one({"user_id": user_id}):
+            users_col.insert_one({
+                "user_id": user_id,
+                "first_name": msg.from_user.first_name,
+                "joined_at": datetime.now(UZ_TZ),
+                "is_vip": False
+            })
 
     await msg.reply_text(
         f"Xush kelibsiz, {msg.from_user.mention}!\n\nKino kodini yuboring:",
