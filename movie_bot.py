@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAGXpLU5NzqZf_BTxDXsVXlbVwlTgoztyMo"
+BOT_TOKEN = "8371879333:AAFVl-wjRT0SlFo563CR9SpI3Ml8lb_Y2Qo"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -540,19 +540,24 @@ async def on_start(client, msg):
     # 2. REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10)
     if param_str and param_len >= 10:
         user_in_db = users_col.find_one({"user_id": user_id})
-        if not user_in_db:
-            is_new_user = True
-            users_col.insert_one({
-                "user_id": user_id,
-                "first_name": msg.from_user.first_name,
-                "username": msg.from_user.username,
-                "joined_at": datetime.now(UZ_TZ),
-                "last_active": datetime.now(UZ_TZ),
-                "referrals": 0,
-                "referred_by": int(param_str),
-                "is_vip": False,
-                "bonus_given": False 
-            })
+        try:
+            referrer_id = int(param_str) # Son ko'rinishiga o'tkazamiz
+            if not user_in_db:
+                is_new_user = True
+                users_col.insert_one({
+                    "user_id": user_id,
+                    "first_name": msg.from_user.first_name,
+                    "username": msg.from_user.username,
+                    "joined_at": datetime.now(UZ_TZ),
+                    "last_active": datetime.now(UZ_TZ),
+                    "referrals": 0,
+                    "referred_by": int(param_str),
+                    "is_vip": False,
+                    "bonus_given": False 
+                })
+        except ValueError:
+            pass
+
 
     # 3. ADMIN TEKSHIRUVI
     if is_admin(user_id):
@@ -588,17 +593,26 @@ async def on_start(client, msg):
     # 6. KINO KODI BO'LSA YUBORISH (ID < 10)
     if param_str and param_len < 10:
         movie = movies_col.find_one({"code": param_str})
-        if movie:
-            # Statistika uchun faqat yuklashni oshiramiz
-            movies_col.update_one({"code": param_str}, {"$inc": {"downloads": 1}})
-            
-            return await msg.reply_cached_media(
-                file_id=movie['file_id'],
-                caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}\n📥 Yuklangan: {movie.get('downloads', 0) + 1} marta",
-                reply_markup=user_menu()
-            )
-        else:
-            await msg.reply("❌ Afsuski, bu kod bo'yicha kino topilmadi.")
+        try:
+
+            movie_code = int(param_str)
+            movie = movies_col.find_one({"code": movie_code})
+
+
+            if movie:
+                # Statistika uchun faqat yuklashni oshiramiz
+                movies_col.update_one({"code": param_str}, {"$inc": {"downloads": 1}})
+                
+                return await msg.reply_cached_media(
+                    file_id=movie['file_id'],
+                    caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: {movie['code']}\n📥 Yuklangan: {movie.get('downloads', 0) + 1} marta",
+                    reply_markup=user_menu()
+                )
+            else:
+                await msg.reply("❌ Afsuski, bu kod bo'yicha kino topilmadi.")
+                return
+        except ValueError:
+            await msg.reply("❌ Xato kod yuborildi.")
             return
 
     # 7. ODDIY START (Bazada bo'lmasa qo'shish)
