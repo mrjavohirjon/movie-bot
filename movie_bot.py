@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAF0OTA02dMVzzK87ekjzQyQQcd8eJPpfXE"
+BOT_TOKEN = "8371879333:AAGQq2zMQbm3SEP5DmIEVlYXoVQlvwxmBxQ"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -526,8 +526,17 @@ async def on_start(client, msg):
     user_id = msg.from_user.id
     param = msg.command[1] if len(msg.command) > 1 else None
     
-    param_str = str(param) if param else ""
+    # 1. Parametrni olamiz
+    raw = msg.command[1] if len(msg.command) > 1 else ""
+
+    # 2. Agar parametr ichida '=' bo'lsa (masalan to'liq link bo'lsa), undan keyingi qismni olamiz
+    if "=" in raw:
+        raw = raw.split("=")[-1]
+
+    # 3. Endi o'sha qismdan faqat raqamlarni ajratamiz
+    param_str = "".join(filter(str.isdigit, raw))
     param_len = len(param_str)
+
     is_new_user = False
 
     # 1. FAQAT REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10 bo'lsa)
@@ -551,7 +560,7 @@ async def on_start(client, msg):
     # 2. ADMIN TEKSHIRUVI
     if is_admin(user_id):
         return await msg.reply(
-            f"Salom Admin {msg.from_user.first_name}!\nPanelga xush kelibsiz.",
+            f"Salom Admin {msg.from_user.first_name}!\n\nPanelga xush kelibsiz.",
             reply_markup=admin_menu()
         )
 
