@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAG0YU_lSc_LI9GVOhb8BxdZAteBjXeLH80"
+BOT_TOKEN = "8371879333:AAH4-kIMuJtgqvyDjwlDpppuAxGEsg7J8Qc"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -338,22 +338,25 @@ scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 ADMINS = [6117765181, 516345678] # Kerakli ID-larni shu yerga qo'shasiz
 
 async def check_subscription(client, user_id):
-    # 1. ADMINLARNI TEKSHIRISH
-    if user_id in ADMINS:
+    # 🌟 ADMINLAR UCHUN TEKSHIRUVNI BEKOR QILISH
+    if is_admin(user_id):
         return True
-        
-    # 2. VIP TEKSHIRISH (Pymongo uchun await-siz)
+    
+    # VIP foydalanuvchilar uchun ham bekor qilish
     user_data = users_col.find_one({"user_id": user_id})
     if user_data and user_data.get("is_vip", False):
         return True
 
-    # 3. KANALLARNI TEKSHIRISH
-    # Bu yerda kanallar ro'yxati to'g'riligini tekshiring
-    channels = [KINO1CHRA_CHANNEL, -1002283084344] 
+    conf = get_config()
+    mandatory_channels = conf.get("mandatory_channels", [])
     
-    for channel in channels:
+    # Agar kanallar bo'lmasa, hamma kiraveradi
+    if not mandatory_channels:
+        return True
+
+    for channel in mandatory_channels:
         try:
-            member = await client.get_chat_member(channel, user_id)
+            member = await client.get_chat_member(channel['id'], user_id)
             if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
                 return False
         except (UserNotParticipant, Exception):
@@ -376,19 +379,13 @@ async def get_top_referrals():
 
 async def get_sub_keyboard(client, user_id):
     buttons = []
-    # Kanallar ro'yxati va ularning havolalari
-    # DIQQAT: Linklar to'g'ri ekanligiga ishonch hosil qiling
-    sub_channels = [
-        ["1-Kanal", "https://t.me/KinoDrift"],
-        ["2-Kanal", "https://t.me/+B1mY_UAnXWk0MGJi"] # O'zingizni kanalingiz linki
-    ]
+    conf = get_config()
+    mandatory_channels = conf.get("mandatory_channels", [])
     
-    for name, link in sub_channels:
-        buttons.append([InlineKeyboardButton(name, url=link)])
+    for ch in mandatory_channels:
+        buttons.append([InlineKeyboardButton(ch["name"], url=ch["link"])])
     
-    # Eng oxirida Tasdiqlash tugmasini qo'shamiz
     buttons.append([InlineKeyboardButton("✅ Tasdiqlash", callback_data="check_sub")])
-    
     return InlineKeyboardMarkup(buttons)
 
 async def handle_movie_delivery(client, user_id, movie_code):
@@ -461,6 +458,8 @@ async def handle_movie_delivery(client, user_id, movie_code):
             return True
 
     return False
+
+
 
 # ==========================================
 #               INSTAGRAM LINK
@@ -548,6 +547,12 @@ async def on_start(client, msg):
                 {"user_id": user_id},
                 {"$set": {"referred_by": ref_id}}
             )
+
+    if is_admin(user_id):
+        return await msg.reply(
+            f"Salom Admin {msg.from_user.first_name}!\nPanelga xush kelibsiz.",
+            reply_markup=admin_menu()
+        )
 
     # Obuna tekshiruvi
 
@@ -944,6 +949,11 @@ async def handle_shorts_processing(client, msg):
 
 @app.on_message((filters.text | filters.video | filters.photo) & filters.private)
 async def handle_text(client, msg):
+
+    user_id = msg.from_user.id
+
+    if not await check_subscription(client, user_id):
+        return
     
     if not msg.from_user:
         return
