@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAH4-kIMuJtgqvyDjwlDpppuAxGEsg7J8Qc"
+BOT_TOKEN = "8371879333:AAH6HBhVyFA_sMtEAyM5BPNGI_0qFuosT3E"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -383,7 +383,12 @@ async def get_sub_keyboard(client, user_id):
     mandatory_channels = conf.get("mandatory_channels", [])
     
     for ch in mandatory_channels:
-        buttons.append([InlineKeyboardButton(ch["name"], url=ch["link"])])
+        # .get() ishlatish xatolikni oldini oladi
+        name = ch.get("name", "Kanalga obuna bo'lish") 
+        link = ch.get("link")
+        
+        if link:
+            buttons.append([InlineKeyboardButton(name, url=link)])
     
     buttons.append([InlineKeyboardButton("✅ Tasdiqlash", callback_data="check_sub")])
     return InlineKeyboardMarkup(buttons)
