@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8509897503:AAFLuOZTd57m0Eh5mVi3zb3KGH-gu6LNQS0"
+BOT_TOKEN = "8509897503:AAGJPmd4-rNPyLJ91JhLERdkTAMlEHe6Kog"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -338,30 +338,32 @@ scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 ADMINS = [6117765181, 516345678] # Kerakli ID-larni shu yerga qo'shasiz
 
 async def check_subscription(client, user_id):
-    # 🌟 ADMINLAR UCHUN TEKSHIRUVNI BEKOR QILISH
+
     if is_admin(user_id):
-        return True
-    
-    # VIP foydalanuvchilar uchun ham bekor qilish
-    user_data = users_col.find_one({"user_id": user_id})
-    if user_data and user_data.get("is_vip", False):
-        return True
+        return []
 
-    conf = get_config()
-    mandatory_channels = conf.get("mandatory_channels", [])
-    
-    # Agar kanallar bo'lmasa, hamma kiraveradi
-    if not mandatory_channels:
-        return True
+    user = users_col.find_one({"user_id": user_id})
+    if user and user.get("is_vip"):
+        return []
 
-    for channel in mandatory_channels:
+    channels = get_config().get("mandatory_channels", [])
+    not_joined = []
+
+    for ch in channels:
         try:
-            member = await client.get_chat_member(channel['id'], user_id)
-            if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
-                return False
-        except (UserNotParticipant, Exception):
-            return False
-    return True
+            member = await client.get_chat_member(int(ch["id"]), user_id)
+
+            if member.status in (
+                ChatMemberStatus.LEFT,
+                ChatMemberStatus.BANNED
+            ):
+                not_joined.append(ch)
+
+        except Exception:
+            # API xato bersa bloklamaymiz
+            continue
+
+    return not_joined
 
 
 
@@ -377,20 +379,23 @@ async def get_top_referrals():
         except:
             pass
 
-async def get_sub_keyboard(client, user_id):
+def get_sub_keyboard(not_joined_channels):
+
     buttons = []
-    conf = get_config()
-    mandatory_channels = conf.get("mandatory_channels", [])
-    
-    for ch in mandatory_channels:
-        # .get() ishlatish xatolikni oldini oladi
-        name = ch.get("name", "Kanalga obuna bo'lish") 
-        link = ch.get("link")
-        
-        if link:
-            buttons.append([InlineKeyboardButton(name, url=link)])
-    
-    buttons.append([InlineKeyboardButton("✅ Tasdiqlash", callback_data="check_sub")])
+
+    for ch in not_joined_channels:
+        if ch.get("link"):
+            buttons.append([
+                InlineKeyboardButton(
+                    ch.get("name", "Kanal"),
+                    url=ch["link"]
+                )
+            ])
+
+    buttons.append([
+        InlineKeyboardButton("✅ Tasdiqlash", callback_data="check_sub")
+    ])
+
     return InlineKeyboardMarkup(buttons)
 
 async def handle_movie_delivery(client, user_id, movie_code):
@@ -523,144 +528,133 @@ async def give_referral_bonus(client, user_id):
 
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, msg):
-    user_id = msg.from_user.id
 
-        # 3. ADMIN TEKSHIRUVI
+    user_id = msg.from_user.id
+    first_name = msg.from_user.first_name
+
+    # =========================
+    # 1️⃣ ADMIN TEKSHIRUV
+    # =========================
     if is_admin(user_id):
         return await msg.reply(
-            f"Salom Admin {msg.from_user.first_name}!\n\nPanelga xush kelibsiz.",
+            f"Salom Admin {first_name}!\n\nPanelga xush kelibsiz.",
             reply_markup=admin_menu()
         )
 
-    # 4. MAJBURIY OBUNA TEKSHIRUVI
+    # =========================
+    # 2️⃣ MAJBURIY OBUNA
+    # =========================
     try:
         is_sub = await check_subscription(client, user_id)
-    except Exception:
-        is_sub = True # Xatolik bo'lsa o'tkazib yuboramiz
+    except Exception as e:
+        print("SUB CHECK ERROR:", e)
+        is_sub = True   # bot to'xtab qolmasin
 
-    if not is_sub:
-        return await msg.reply_text(
-            "<b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
-            reply_markup=await get_sub_keyboard(client, user_id)
+    not_joined = await check_subscription(client, user_id)
+
+    if not_joined:
+        return await msg.reply(
+            "❗ Iltimos quyidagi kanallarga obuna bo‘ling:",
+            reply_markup=get_sub_keyboard(not_joined)
         )
-    
 
-
-    # 2. REFERAL BO'LSA BAZAGA QO'SHISH (ID >= 10 xonali bo'lsa)
-
-    if len(msg.command) > 1:
-        param = msg.command[1] # Masalan: "33"
-        param_len = len(param)
-
-            # ✅ DEBUG (QAYERDAN TOPILMAYOTGANINI KO'RAMIZ)
-        print("PARAM:", param, type(param))
-        print("SEARCH STRING:", movies_col.find_one({"code": str(param)}))
-
-        if param.isdigit():
-            print("SEARCH INT:", movies_col.find_one({"code": int(param)}))
-        
-        # BAZADAN QIDIRISH (Ham matn, ham son ko'rinishida tekshiramiz)
-        # Chunki bazada '33' yoki 33 bo'lishi mumkin
-        movie = movies_col.find_one({
-            "$or": [
-                {"code": param},
-                {"code": int(param) if param.isdigit() else None}
-            ]
+    # =========================
+    # 3️⃣ USERNI BAZAGA QO‘SHISH
+    # =========================
+    if not users_col.find_one({"user_id": user_id}):
+        users_col.insert_one({
+            "user_id": user_id,
+            "first_name": first_name,
+            "username": msg.from_user.username,
+            "joined_at": datetime.now(UZ_TZ),
+            "is_vip": False,
+            "referrals": 0,
+            "bonus_given": False
         })
-        if param_len >= 10:
-            user_in_db = users_col.find_one({"user_id": user_id})
-            if not user_in_db:
-                users_col.insert_one({
-                    "user_id": user_id,
-                    "first_name": msg.from_user.first_name,
-                    "username": msg.from_user.username,
-                    "joined_at": datetime.now(UZ_TZ),
-                    "last_active": datetime.now(UZ_TZ),
-                    "referrals": 0,
-                    "referred_by": param, # Allaqachon integer
-                    "is_vip": False,
-                    "bonus_given": False 
-                })
 
-    
-        # 5. REFERAL XABARNOMASI (Obunadan o'tgandan keyin)
-        if param_len >= 10:
-            user_data = users_col.find_one({"user_id": user_id})
-            if user_data and user_data.get("referred_by") and not user_data.get("bonus_given"):
-                referrer_id = user_data["referred_by"]
-                if referrer_id != user_id:
-                    try:
-                        await client.send_message(
-                            chat_id=referrer_id,
-                            text=f"🔔 <b>Yangi referal!</b>\n\n{msg.from_user.first_name} obuna bo'ldi!"
-                        )
-                        users_col.update_one({"user_id": user_id}, {"$set": {"bonus_given": True}})
-                    except:
-                        pass
-                await msg.reply("✅ Taklif muvaffaqiyatli qabul qilindi!", reply_markup=user_menu(user_id))
-                return
-
-        # 6. KINO KODI BO'LSA YUBORISH (ID < 10 xonali bo'lsa)
-        if param_len < 10:          
-            if movie:
-                              
-                caption = (
-                    f"🎬 <b>{movie['title']}</b>\n\n"
-                    f"🔑 Kod: <code>{movie['code']}</code>\n"
-                    f"📥 Yuklangan: {movie.get('downloads', 0) + 1} marta"
-                )
-
-                try:
-                    # 1️⃣ Asosiy usul — file_id orqali
-                    await msg.reply_video(
-                        video=movie['file_id'],
-                        caption=caption
-                    )
-
-                    # faqat muvaffaqiyatli yuborilgandan keyin
-                    movies_col.update_one(
-                        {"_id": movie["_id"]},
-                        {"$inc": {"downloads": 1}}
-                    )
-                    return
-
-                except Exception:
-
-                    try:
-                        # 2️⃣ Backup — kanal message_id orqali
-                        await client.copy_message(
-                            chat_id=msg.chat.id,
-                            from_chat_id=SAVED_MOVIE,
-                            message_id=movie["message_id"],
-                            caption=caption
-                        )
-
-                        movies_col.update_one(
-                            {"_id": movie["_id"]},
-                            {"$inc": {"downloads": 1}}
-                        )
-                        return
-
-                    except Exception:
-                        return await msg.reply("❌ Kino fayli topilmadi.")
-            else:
-                await msg.reply(f"❌ '{param}' kodli kino topilmadi.")
-                return
-
-    # 7. ODDIY START (Hech qanday parametr bo'lmasa)
-    else:
-        if not users_col.find_one({"user_id": user_id}):
-            users_col.insert_one({
-                "user_id": user_id,
-                "first_name": msg.from_user.first_name,
-                "joined_at": datetime.now(UZ_TZ),
-                "is_vip": False
-            })
-
-        await msg.reply_text(
+    # =========================
+    # 4️⃣ START PARAMETR BORMI?
+    # =========================
+    if len(msg.command) < 2:
+        # oddiy start
+        return await msg.reply(
             f"Xush kelibsiz, {msg.from_user.mention}!\n\nKino kodini yuboring:",
             reply_markup=user_menu(user_id)
         )
+
+    param = msg.command[1].strip()
+
+    # =========================
+    # 5️⃣ REFERAL (10+ xonali ID)
+    # =========================
+    if param.isdigit() and len(param) >= 10:
+
+        referrer_id = int(param)
+
+        if referrer_id != user_id:
+            users_col.update_one(
+                {"user_id": user_id},
+                {"$set": {"referred_by": referrer_id}},
+                upsert=True
+            )
+
+            try:
+                await client.send_message(
+                    referrer_id,
+                    f"🔔 <b>Yangi referal!</b>\n\n{first_name} botga qo‘shildi!"
+                )
+            except:
+                pass
+
+        return await msg.reply(
+            "✅ Taklif muvaffaqiyatli qabul qilindi!",
+            reply_markup=user_menu(user_id)
+        )
+
+    # =========================
+    # 6️⃣ KINO KODI
+    # =========================
+    movie = None
+
+    if param.isdigit():
+        movie = movies_col.find_one({"code": int(param)})
+    else:
+        movie = movies_col.find_one({"code": param})
+
+    if not movie:
+        return await msg.reply(f"❌ '{param}' kodli kino topilmadi.")
+
+    caption = (
+        f"🎬 <b>{movie['title']}</b>\n\n"
+        f"🔑 Kod: <code>{movie['code']}</code>\n"
+        f"📥 Yuklangan: {movie.get('downloads', 0) + 1} marta"
+    )
+
+    # =========================
+    # 7️⃣ KINONI YUBORISH
+    # =========================
+    try:
+        await msg.reply_video(
+            video=movie["file_id"],
+            caption=caption
+        )
+
+    except Exception:
+        try:
+            await client.copy_message(
+                chat_id=msg.chat.id,
+                from_chat_id=SAVED_MOVIE,
+                message_id=movie["message_id"],
+                caption=caption
+            )
+        except Exception:
+            return await msg.reply("❌ Kino fayli topilmadi.")
+
+    # download counter
+    movies_col.update_one(
+        {"_id": movie["_id"]},
+        {"$inc": {"downloads": 1}}
+    )
 
 # 1. Kanalga video tashlanganda
 @app.on_message(filters.chat(KINO1CHRA_CHANNEL) & (filters.video | filters.document))
@@ -731,22 +725,35 @@ async def send_movie_final(client, cb):
 
 @app.on_callback_query(filters.regex("^check_sub$"))
 async def check_cb(client, cb):
+
     user_id = cb.from_user.id
-    
-    if await check_subscription(client, user_id):
-        # Referal ballini berish mantiqini chaqiramiz
-        await give_referral_bonus(client, user_id)
-        
-        if cb.message:
-            try:
-                await cb.message.delete()
-            except:
-                pass
-        
-        await cb.answer("Rahmat! Obuna tasdiqlandi.", show_alert=True)
-        await client.send_message(user_id, "Xush kelibsiz! Kino kodini yuboring.")
-    else:
-        await cb.answer("❌ Siz hali barcha kanallarga obuna bo'lmadingiz!", show_alert=True)
+
+    # Telegram loadingni yopamiz
+    await cb.answer()
+
+    # ✅ QAYTA TEKSHIRISH
+    not_joined = await check_subscription(client, user_id)
+
+    # ❌ Hali obuna bo'lmaganlar bor
+    if not_joined:
+        return await cb.message.edit_text(
+            "❌ Hali barcha kanallarga obuna bo‘lmadingiz!\n\n"
+            "Quyidagi kanallarga obuna bo‘ling:",
+            reply_markup=get_sub_keyboard(not_joined)
+        )
+
+    # ✅ HAMMASIGA OBUNA BO'LGAN
+    await give_referral_bonus(client, user_id)
+
+    try:
+        await cb.message.delete()
+    except:
+        pass
+
+    await client.send_message(
+        user_id,
+        "✅ Rahmat! Obuna tasdiqlandi.\n\nKino kodini yuboring 🎬"
+    )
 
 # ==========================================
 #               HANDLERS
