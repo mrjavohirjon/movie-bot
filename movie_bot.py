@@ -1,6 +1,7 @@
 import asyncio
 import math
 from datetime import datetime
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 from urllib.parse import quote
 from pyrogram.enums import ChatMemberStatus
@@ -21,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAGfNkGgMFhhe19g6zyqDABBDrvfS3IyN0Q"
+BOT_TOKEN = "8371879333:AAG0YU_lSc_LI9GVOhb8BxdZAteBjXeLH80"
 MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -337,26 +338,29 @@ scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 ADMINS = [6117765181, 516345678] # Kerakli ID-larni shu yerga qo'shasiz
 
 async def check_subscription(client, user_id):
-    # ADMINLARNI TEKSHIRISH
+    # 1. ADMINLARNI TEKSHIRISH
     if user_id in ADMINS:
         return True
         
-    # VIP TEKSHIRISH (await olib tashlandi!)
+    # 2. VIP TEKSHIRISH (Pymongo uchun await-siz)
     user_data = users_col.find_one({"user_id": user_id})
     if user_data and user_data.get("is_vip", False):
         return True
 
-    # KANALLARNI TEKSHIRISH
-    channels = [KINO1CHRA_CHANNEL, -1002283084344] # O'z kanallaringiz ID-si
+    # 3. KANALLARNI TEKSHIRISH
+    # Bu yerda kanallar ro'yxati to'g'riligini tekshiring
+    channels = [KINO1CHRA_CHANNEL, -1002283084344] 
     
     for channel in channels:
         try:
             member = await client.get_chat_member(channel, user_id)
             if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
                 return False
-        except Exception:
+        except (UserNotParticipant, Exception):
             return False
     return True
+
+
 
 async def get_top_referrals():
     # Eng ko'p ball to'plagan 10 ta foydalanuvchini olish
@@ -370,21 +374,22 @@ async def get_top_referrals():
         except:
             pass
 
-
 async def get_sub_keyboard(client, user_id):
-    """Obuna bo'lmaganlar uchun bazadagi kanallardan tugma yasash"""
-    keyboard = []
-    for channel in channels_col.find():
-        try:
-            # Har bir kanal uchun alohida tugma
-            keyboard.append([
-                InlineKeyboardButton("📢 Kanalga a'zo bo'lish", url=channel['invite_link'])
-            ])
-        except:
-            continue
+    buttons = []
+    # Kanallar ro'yxati va ularning havolalari
+    # DIQQAT: Linklar to'g'ri ekanligiga ishonch hosil qiling
+    sub_channels = [
+        ["1-Kanal", "https://t.me/KinoDrift"],
+        ["2-Kanal", "https://t.me/+B1mY_UAnXWk0MGJi"] # O'zingizni kanalingiz linki
+    ]
     
-    keyboard.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_sub")])
-    return InlineKeyboardMarkup(keyboard)
+    for name, link in sub_channels:
+        buttons.append([InlineKeyboardButton(name, url=link)])
+    
+    # Eng oxirida Tasdiqlash tugmasini qo'shamiz
+    buttons.append([InlineKeyboardButton("✅ Tasdiqlash", callback_data="check_sub")])
+    
+    return InlineKeyboardMarkup(buttons)
 
 async def handle_movie_delivery(client, user_id, movie_code):
     """Kinoni qidirish va yuborish (Sinxron PyMongo uchun xavfsiz variant)"""
