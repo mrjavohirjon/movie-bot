@@ -258,10 +258,11 @@ async def check_force_join(client, msg):
             buttons.append([InlineKeyboardButton(text=f"➕ {index}-kanal", url=link)])
         
         # Tasdiqlash tugmasiga deep link parametrini qo'shish
-        start_param = msg.command[1] if hasattr(msg, "command") and len(msg.command) > 1 else ""
+        # check_force_join funksiyasi ichida (90-91 qatorlar atrofida)
+        start_param = msg.command[1] if hasattr(msg, "command") and len(msg.command) > 1 else "start"
         me = await client.get_me()
+        # Agar parametr bo'lmasa, shunchaki ?start=start qilib yuboramiz
         join_url = f"https://t.me/{me.username}?start={start_param}"
-        
         buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", url=join_url)])
         
         text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling:"
@@ -483,9 +484,18 @@ async def start(client, msg):
         )
         user_data = {"is_counted": False}
 
+    is_subscribed = await check_force_join(client, msg)
+
     # 2. Majburiy obuna (Yuqoridagi yangi funksiya)
     if not await check_force_join(client, msg):
         return 
+    
+    if is_subscribed:
+        try:
+            # Bot yuborgan oxirgi xabarni (obuna talabini) o'chiradi
+            await client.delete_messages(msg.chat.id, msg.id - 1)
+        except:
+            pass
 
     # 3. Agar obunadan o'tgan bo'lsa va hali ball berilmagan bo'lsa
     if user_data.get("is_counted") == False and len(msg.command) > 1:
@@ -576,63 +586,51 @@ async def send_movie_final(client, cb):
     except Exception as e:
         await cb.answer(f"Xatolik: {str(e)}", show_alert=True)
 
-@app.on_callback_query(filters.regex("check")) # callback_data="check" ga moslab
-async def on_check_sub(client, query):
-    user_id = query.from_user.id
+@app.on_callback_query(filters.regex("check"))
+async def check_callback(client, query):
+    code = query.data.split("_")[1]
     
-    # 1. Yangi funksiya orqali obunani tekshiramiz
-    # Bu funksiya False qaytarsa, foydalanuvchiga "Hali a'zo emassiz" deb xabar chiqarib bo'lgan bo'ladi
     if await check_force_join(client, query):
+        # Agar a'zo bo'lsa, ogohlantirishni o'chiramiz
+        await query.message.delete()
         
-        # 2. ✅ OBUNA TASDIQLANGAN BO'LSA:
-        # Eski xabarni o'chiramiz
-        await query.message.delete() 
-        
-        # 3. Foydalanuvchini bazaga qo'shish/yangilash (Hisobga olish uchun muhim!)
-        users_col.update_one(
-            {"user_id": user_id},
-            {"$set": {"last_active": datetime.utcnow()},
-             "$setOnInsert": {"joined_at": datetime.utcnow()}},
-            upsert=True
-        )
-
-        # 4. Asosiy menyu va tabrikni chiqaramiz
-        await query.message.reply_text(
-            "✅ Obuna tasdiqlandi! Endi botdan to'liq foydalanishingiz mumkin.\n\n"
-            "🎬 Kino kodini yuboring yoki quyidagi menyudan foydalaning:",
-            reply_markup=user_menu(user_id)
-        )
-    else:
-        # ❌ OBUNA BO'LMAGAN BO'LSA:
-        # check_force_join funksiyasi allaqachon query.answer(show_alert=True) 
-        # yoki xabarni edit qilishni bajarib bo'ldi. Shuning uchun bu yerga qo'shimcha kod shart emas.
-        pass
+        # Foydalanuvchini botga xush kelibsiz deymiz
+        uid = query.from_user.id
+        if code != "none":
+            # Agar kino kodi bo'lsa, o'sha kinoni yuboramiz
+            await handle_movie_delivery(client, uid, code)
+        else:
+            # Oddiy /start bo'lsa, menyuni yuboramiz
+            await client.send_message(
+                uid, 
+                f"✅ Obuna tasdiqlandi! Xush kelibsiz.",
+                reply_markup=user_menu(uid)
+            )
 
 # ==========================================
 #               HANDLERS
 # ==========================================
 
-@app.on_callback_query(filters.regex("^check$"))
-async def check_cb(client, cb):
-    user_id = cb.from_user.id
+@app.on_callback_query(filters.regex("^check_"))
+async def check_callback(client, query):
+    code = query.data.split("_")[1]
     
-    # 1. Obunani tekshiramiz
-    if await check_force_join(client, cb):
-        # ✅ Agar obuna bo'lgan bo'lsa
-        await cb.message.delete() # Obuna so'ralgan xabarni o'chiramiz
+    if await check_force_join(client, query):
+        # Agar a'zo bo'lsa, ogohlantirishni o'chiramiz
+        await query.message.delete()
         
-        # ⚠️ DIQQAT: start(client, cb) deb chaqirmaymiz!
-        # Buning o'rniga foydalanuvchiga menyuni chiqaramiz:
-        await client.send_message(
-            chat_id=user_id,
-            text=f"Xush kelibsiz, {cb.from_user.first_name}!\n\n Film kodini yuboring:",
-            reply_markup=user_menu(user_id) # O'zingizning menyu funksiyangiz
-        )
-    else:
-        # ❌ Agar hali ham obuna bo'lmagan bo'lsa
-        # check_force_join funksiyasi allaqachon "A'zo bo'ling" xabarini chiqargan bo'ladi
-        # Shuning uchun bu yerda shunchaki alert chiqarish kifoya
-        await cb.answer("⚠️ Siz hali hamma kanallarga a'zo bo'lmadingiz!", show_alert=True)
+        # Foydalanuvchini botga xush kelibsiz deymiz
+        uid = query.from_user.id
+        if code != "none":
+            # Agar kino kodi bo'lsa, o'sha kinoni yuboramiz
+            await handle_movie_delivery(client, uid, code)
+        else:
+            # Oddiy /start bo'lsa, menyuni yuboramiz
+            await client.send_message(
+                uid, 
+                f"✅ Obuna tasdiqlandi! Xush kelibsiz.",
+                reply_markup=user_menu(uid)
+            )
 
 @app.on_callback_query(filters.regex("^rate_"))
 async def rate_movie_cb(client, cb):
