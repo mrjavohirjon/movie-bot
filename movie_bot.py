@@ -295,9 +295,20 @@ def get_movie_list(page=1, genre=None):
     text += "─────────────────\n\n"
     
     for m in movies:
-        # RASMDA KO'RSATILGANDEK: Birinchi qatorni ajratish
-        title_line = m['title'].split('\n')[0]
-        text += f"🎬 {title_line}\n🔑 FILM KODI: <code>{m['code']}</code>\n\n"
+        # 1. Ma'lumotlarni bazadan xavfsiz olamiz
+        movie_title = m.get('title', 'Noma\'lum film').split('\n')[0]
+        movie_code = m.get('code', 'Yo\'q')
+        downloads_count = m.get('downloads', 0)
+        
+        # 2. SIZ SO'RAGAN FORMAT:
+        # Film nomi
+        # Yuklab olinganlar soni
+        # Film kodi
+        text += (
+            f"🎬 <b>{movie_title}</b>\n"
+            f"📥 <b>Yuklab olindi:</b> {downloads_count} marta\n"
+            f"🔑 <b>FILM KODI:</b> <code>{movie_code}</code>\n\n"
+        )
         
     buttons = []
     nav_row = []
@@ -365,9 +376,21 @@ async def send_weekly_highlights():
     text = "🌟 <b>HAFTA TAVSIYASI</b>\n______________________________________\n\n"
     text += "🔥 Ushbu haftaning eng mashhur kinolari:\n\n"
     for i, m in enumerate(top_3, 1):
-        # Nomi split qilinishini f-stringdan tashqariga chiqaramiz
+        # 1. Ma'lumotlarni tayyorlab olamiz
         movie_title = m['title'].split('\n')[0] 
-        text += f"{i}. 🎬 <b>{movie_title}</b>\n🔑 Kod: <code>{m['code']}</code>\n\n"
+        downloads_count = m.get('downloads', 0)
+        movie_code = m['code']
+        
+        # 2. SIZ SO'RAGAN TARTIB:
+        # Nomi
+        # Yuklab olinganlar soni
+        # Film kodi
+        text += (
+            f"{i}.  <b>{movie_title}</b>\n"
+            f"   📥 <b>Yuklab olindi:</b> {downloads_count} marta\n"
+            f"   🔑 <b>FILM KODI:</b> <code>{movie_code}</code>\n\n"
+        )
+        
     text += "🍿 <i>Kino kodini botga yuboring!</i>"
 
     # Hamma foydalanuvchilarga tarqatish
@@ -407,7 +430,9 @@ scheduler.add_job(send_daily_stats_to_channel, "cron", hour=21, minute=0)
 
 
 async def handle_movie_delivery(client, user_id, movie_code):
-    """Kinoni qidirish va yuborish (Tugmalar bilan)"""
+    """Kinoni qidirish, statistika yuritish va yuborish"""
+    
+    # 1. Kinoni bazadan qidiramiz
     movie = movies_col.find_one({
         "$or": [
             {"code": movie_code},
@@ -415,23 +440,51 @@ async def handle_movie_delivery(client, user_id, movie_code):
         ]
     })
     
-    if movie:
-        # Tugmalarni yasash (Insta link bo'lsa parcha tugmasi ham chiqadi)
-        kb = movie_extra_kb(
-            code=movie['code'], 
-            is_admin=is_admin(user_id), 
-            insta_link=movie.get('insta_link')
+    if not movie:
+        return False
+
+    # 2. Yuklab olishlar sonini bazada 1 taga oshiramiz
+    movies_col.update_one(
+        {"_id": movie["_id"]},
+        {"$inc": {"downloads": 1}}
+    )
+
+    # 🌟 MANA SHU YERDA O'ZGARUVCHINI ANIQLAYMIZ:
+    # movie.get('downloads', 0) - bazadagi eski soni
+    # + 1 - hozirgi yuklashni qo'shamiz
+    updated_downloads = movie.get('downloads', 0) + 1
+    
+    movie_title = movie.get('title', "Noma'lum film")
+    bot_me = await client.get_me()
+
+    # 3. Tugmalarni yasash
+    kb = movie_extra_kb(
+        code=movie['code'], 
+        is_admin=is_admin(user_id), 
+        insta_link=movie.get('insta_link')
+    )
+
+    try:
+        # 4. Video ostidagi matn (Siz so'ragan formatda)
+        caption_text = (
+            f" <b>{movie_title}</b>\n" # 1. Nomi
+            f"📥 <b>Yuklab olindi:</b> {updated_downloads} marta\n" # 2. Statistikasi
+            f"🔑 <b>Film kodi:</b> <code>{movie['code']}</code>\n\n" # 3. Kodi
+            f"🤖 <b>Bot:</b> @{bot_me.username}"
         )
-        
+
+        # 5. Videoni yuborish
         await client.send_video(
             chat_id=user_id,
             video=movie['file_id'],
-            caption=f"🎬 <b>{movie['title']}</b>\n\n🔑 Kod: <code>{movie['code']}</code>",
-            reply_markup=kb # Tugmalar shu yerda qo'shiladi
+            caption=caption_text,
+            reply_markup=kb
         )
-        movies_col.update_one({"_id": movie["_id"]}, {"$inc": {"downloads": 1}})
         return True
-    return False
+
+    except Exception as e:
+        print(f"VIDEO YUBORISHDA XATO: {e}")
+        return False
 
 # ==========================================
 #               INSTAGRAM LINK
@@ -844,7 +897,7 @@ async def handle_shorts_processing(client, msg):
 
     bot_info = await client.get_me()
     caption = (
-        f"🎬 <b>{movie['title']}</b>\n\n"
+        f" <b>{movie['title']}</b>\n\n"
         f"ℹ️ <i>Yuqoridagi videoda ushbu kinodan parcha ko'rsatilgan.</i>\n"
         f"🔑 <b>Kino kodi:</b> <code>{movie['code']}</code>\n\n"
         f"📥 <b>Kinoni yuklab olish uchun pastdagi tugmani bosing:</b>"
@@ -1265,11 +1318,26 @@ async def handle_text(client, msg):
         return await msg.reply(t, reply_markup=m)
 
     if txt == "📈 Top Kinolar":
+        # Reyting va yuklanishlar bo'yicha saralash
         top = list(movies_col.find().sort([("avg_rating", -1), ("downloads", -1)]).limit(10))
         res = "📈 <b>Top 10 Kinolar:</b>\n\n"
-        for x in top:
+        
+        for i, x in enumerate(top, 1):
+            # 1. Ma'lumotlarni tayyorlaymiz
             t_line = x['title'].split('\n')[0]
-            res += f"🎬 {t_line}\n🔑 FILM KODI: <code>{x['code']}</code>\n\n"
+            downloads_count = x.get('downloads', 0)
+            movie_code = x['code']
+            
+            # 2. SIZ SO'RAGAN FORMAT:
+            # Tartib raqami va Nomi
+            # Yuklab olinganlar soni
+            # Film kodi
+            res += (
+                f"{i}.  <b>{t_line}</b>\n"
+                f"   📥 <b>Yuklab olindi:</b> {downloads_count} marta\n"
+                f"   🔑 <b>FILM KODI:</b> <code>{movie_code}</code>\n\n"
+            )
+            
         return await msg.reply(res)
 
     if txt == "⭐ Sevimlilar":
@@ -1281,7 +1349,7 @@ async def handle_text(client, msg):
             m = movies_col.find_one({"code": c})
             if m:
                 t_line = m['title'].split('\n')[0]
-                res += f"🎬 {t_line}\n🔑 FILM KODI: <code>{m['code']}</code>\n\n"
+                res += f" {t_line}\n🔑 FILM KODI: <code>{m['code']}</code>\n\n"
         return await msg.reply(res)
 
     if txt == "📥 Kino so'rash":
@@ -1462,8 +1530,20 @@ async def handle_text(client, msg):
         if movies:
             res_text = f"🔍 <b>'{txt}' bo'yicha topilgan kinolar:</b>\n\n"
             for m in movies:
-                t_line = m['title'].split('\n')[0]
-                res_text += f"🎬 {t_line}\n🔑 Kod: <code>{m['code']}</code>\n\n"
+                # 1. Ma'lumotlarni xavfsiz tayyorlab olamiz
+                movie_title = m.get('title', 'Noma\'lum film').split('\n')[0]
+                downloads_count = m.get('downloads', 0)
+                movie_code = m.get('code', 'Yo\'q')
+
+                # 2. SIZ SO'RAGAN FORMAT:
+                # Film nomi
+                # Yuklab olinganlar soni
+                # Film kodi
+                res_text += (
+                    f" <b>{movie_title}</b>\n"
+                    f"   📥 <b>Yuklab olindi:</b> {downloads_count} marta\n"
+                    f"   🔑 <b>Kod:</b> <code>{movie_code}</code>\n\n"
+                )
             return await msg.reply(res_text)
         # Agar topilmasa, hech narsa qilmaydi yoki "Topilmadi" deb qaytaradi
 
@@ -1723,21 +1803,31 @@ async def inline_search(client, query):
 
     results = []
     for m in movies:
-        # Kinoning birinchi qatorini nom sifatida olamiz
-        movie_title = m['title'].split('\n')[0]
+        # 1. O'zgaruvchilarni aniqlab olamiz (Xatolik bermasligi uchun)
+        movie_title = m.get('title', 'Noma\'lum film').split('\n')[0]
+        movie_code = m.get('code', '000')
+        downloads_count = m.get('downloads', 0)
         
+        # Bot username'ni olish
+        me = await client.get_me()
+        bot_username = me.username
+
+        # 2. Natijani qo'shamiz
         results.append(
             InlineQueryResultArticle(
                 title=f"🎬 {movie_title}",
-                description=f"🔑 Kod: {m['code']} | 📥 Yuklangan: {m.get('downloads', 0)} marta",
+                # Tavsif qismida yuklanganlar soni va kod
+                description=f"📥 {downloads_count} marta | 🔑 Kod: {movie_code}",
                 input_message_content=InputTextMessageContent(
-                    f"🎬 <b>{m['title']}</b>\n\n"
-                    f"🔑 <b>Film kodi:</b> <code>{m['code']}</code>\n"
+                    # SIZ SO'RAGAN TARTIB:
+                    f"🎬 <b>{movie_title}</b>\n" # 1. Nomi
+                    f"📥 <b>Yuklab olindi:</b> {downloads_count} marta\n" # 2. Statistikasi
+                    f"🔑 <b>Film kodi:</b> <code>{movie_code}</code>\n\n" # 3. Kodi
                     f"🤖 <b>Botimiz:</b> @{bot_username}"
                 ),
                 thumb_url="https://img.icons8.com/fluency/48/movie.png",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎬 Kinoni ko'rish", url=f"https://t.me/{bot_username}?start={m['code']}")]
+                    [InlineKeyboardButton("🎬 Kinoni ko'rish", url=f"https://t.me/{bot_username}?start={movie_code}")]
                 ])
             )
         )
