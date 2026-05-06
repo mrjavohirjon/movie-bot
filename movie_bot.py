@@ -22,7 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
 BOT_TOKEN = "8371879333:AAFVl-wjRT0SlFo563CR9SpI3Ml8lb_Y2Qo"
-MONGO_URL = "mongodb+srv://moviebot:ATQmOjn0TCdyKtTM@cluster0.xvvfs8t.mongodb.net/?appName=Cluster0"
+MONGO_URL = "mongodb+srv://mrjavohirjon:<javoh1r9>@cluster0.gzf5ecj.mongodb.net/?appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
 SAVED_MOVIE = -1003797574060
