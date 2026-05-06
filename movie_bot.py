@@ -21,7 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAFVl-wjRT0SlFo563CR9SpI3Ml8lb_Y2Qo"
+BOT_TOKEN = "8371879333:AAGrSXYY7LBXB8CBw5z-vJqUgnPMw-hcYX0"
 MONGO_URL = "mongodb+srv://mrjavohirjon:javohir123@cluster0.gzf5ecj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
