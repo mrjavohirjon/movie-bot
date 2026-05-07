@@ -713,35 +713,64 @@ async def list_parts_command(client, msg):
     await msg.reply(text)
 
 
-# ==========================================
-#        AUTO SAVE FROM CHANNEL
-# ==========================================
+# Kanal ichida qism kutish holati: { admin_user_id: { code, part_num } }
+channel_addpart_wait = {}
 
 @app.on_message(filters.video & filters.chat(SAVED_MOVIE))
 async def save_movie_from_channel(client, msg):
+    uid = msg.from_user.id if msg.from_user else None
+
+    # ─── Agar admin qism videosi yuborayotgan bo'lsa ───
+    if uid and uid in channel_addpart_wait:
+        if not is_admin(uid):
+            return
+        state = channel_addpart_wait.pop(uid)
+        code = state["code"]
+        part_num = state["part"]
+        label = f"{part_num}-qism"
+
+        movies_col.update_one(
+            {"code": code},
+            {
+                "$push": {
+                    "parts": {
+                        "part": part_num,
+                        "file_id": msg.video.file_id,
+                        "label": label,
+                        "added_at": datetime.now(UZ_TZ)
+                    }
+                }
+            }
+        )
+
+        updated = movies_col.find_one({"code": code})
+        parts = sorted(updated.get("parts", []), key=lambda x: x["part"])
+        title_line = updated.get("title", "Kino").split('\n')[0]
+        parts_text = " | ".join([p["label"] for p in parts])
+        next_part = len(parts) + 1
+
+        await msg.reply(
+            f"✅ <b>{label} saqlandi!</b>\n\n"
+            f"🎬 Kino: <b>{title_line}</b>\n"
+            f"🔑 Kod: <code>{code}</code>\n"
+            f"📦 Qismlar: {parts_text}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"➕ {next_part}-qism qo'shish",
+                    callback_data=f"ap_start_{code}_{next_part}"
+                )],
+                [InlineKeyboardButton("✅ Tayyor", callback_data=f"ap_done_{code}")]
+            ])
+        )
+        return
+
+    # ─── Oddiy yangi kino saqlash ───
     caption = msg.caption or ""
     found_genres = [word.strip("#").lower() for word in caption.split() if word.startswith("#") and word.strip("#").lower() in ALLOWED_GENRES]
     if not found_genres:
         found_genres = ["boshqa"]
 
-    # ✅ AQLLI KOD TIZIMI: bo'sh koddan foydalanish
     new_code = get_next_movie_code()
-
-    star_buttons = [
-        InlineKeyboardButton("⭐ 1", callback_data=f"star_1_{new_code}"),
-        InlineKeyboardButton("⭐ 2", callback_data=f"star_2_{new_code}"),
-        InlineKeyboardButton("⭐ 3", callback_data=f"star_3_{new_code}"),
-        InlineKeyboardButton("⭐ 4", callback_data=f"star_4_{new_code}"),
-        InlineKeyboardButton("⭐ 5", callback_data=f"star_5_{new_code}")
-    ]
-
-    movie_buttons = InlineKeyboardMarkup([
-        star_buttons,
-        [
-            InlineKeyboardButton("🎬 Kinodan parcha", callback_data=f"trailer_none"),
-            InlineKeyboardButton("⭐ Sevimlilar", callback_data=f"fav_{new_code}")
-        ]
-    ])
 
     movies_col.insert_one({
         "code": new_code,
@@ -754,10 +783,10 @@ async def save_movie_from_channel(client, msg):
         "avg_rating": 0.0,
         "votes_count": 0,
         "total_stars": 0,
+        "parts": [],
         "added_at": datetime.now(UZ_TZ)
     })
 
-    # Boshqa o'chirilgan kodlar bor-yo'qligini ko'rsatish
     all_codes = set(m["code"] for m in movies_col.find({}, {"code": 1}))
     max_code = max(all_codes)
     gaps = [i for i in range(1, max_code) if i not in all_codes]
@@ -769,13 +798,92 @@ async def save_movie_from_channel(client, msg):
         f"🎭 <b>Janrlar:</b> #{' #'.join(found_genres)}\n"
         f"📊 <b>Reyting:</b> 0.0 (0 ta ovoz)"
         f"{gap_info}",
-        reply_markup=movie_buttons
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⭐ 1", callback_data=f"star_1_{new_code}"),
+                InlineKeyboardButton("⭐ 2", callback_data=f"star_2_{new_code}"),
+                InlineKeyboardButton("⭐ 3", callback_data=f"star_3_{new_code}"),
+                InlineKeyboardButton("⭐ 4", callback_data=f"star_4_{new_code}"),
+                InlineKeyboardButton("⭐ 5", callback_data=f"star_5_{new_code}")
+            ],
+            [
+                InlineKeyboardButton("➕ Qism qo'shish", callback_data=f"ap_start_{new_code}_1"),
+                InlineKeyboardButton("🗑 O'chirish", callback_data=f"rm_{new_code}")
+            ]
+        ])
     )
+
+
+@app.on_callback_query(filters.regex(r"^ap_start_(\d+)_(\d+)$"))
+async def ap_start_cb(client, cb):
+    """Admin 'Qism qo'shish' tugmasini bosdi"""
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
+
+    parts_data = cb.data.split("_")
+    movie_code = int(parts_data[2])
+    part_num = int(parts_data[3])
+    movie = movies_col.find_one({"code": movie_code})
+    if not movie:
+        return await cb.answer("❌ Kino topilmadi!", show_alert=True)
+
+    title_line = movie.get("title", "Kino").split('\n')[0]
+    parts = movie.get("parts", [])
+    existing = " | ".join([p["label"] for p in sorted(parts, key=lambda x: x["part"])]) or "hali yo'q"
+
+    channel_addpart_wait[cb.from_user.id] = {
+        "code": movie_code,
+        "part": part_num
+    }
+
+    await cb.answer(f"✅ {part_num}-qism videosini shu kanalga yuboring!", show_alert=True)
+    await cb.message.reply(
+        f"⏳ <b>{title_line}</b>\n\n"
+        f"📦 Mavjud qismlar: {existing}\n\n"
+        f"👇 <b>Endi {part_num}-qism videosini shu kanalga yuboring:</b>",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Bekor qilish", callback_data=f"ap_cancel_{movie_code}")]
+        ])
+    )
+
+
+@app.on_callback_query(filters.regex(r"^ap_cancel_(\d+)$"))
+async def ap_cancel_cb(client, cb):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
+    uid = cb.from_user.id
+    if uid in channel_addpart_wait:
+        channel_addpart_wait.pop(uid)
+    await cb.message.edit_text("❌ Qism qo'shish bekor qilindi.")
+    await cb.answer()
+
+
+@app.on_callback_query(filters.regex(r"^ap_done_(\d+)$"))
+async def ap_done_cb(client, cb):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
+    code = int(cb.data.split("_")[2])
+    movie = movies_col.find_one({"code": code})
+    parts = sorted(movie.get("parts", []), key=lambda x: x["part"])
+    title_line = movie.get("title", "Kino").split('\n')[0]
+    parts_text = " | ".join([p["label"] for p in parts]) if parts else "qism yo'q"
+
+    await cb.message.edit_text(
+        f"✅ <b>Kino to'liq saqlandi!</b>\n\n"
+        f"🎬 <b>{title_line}</b>\n"
+        f"🔑 Kod: <code>{code}</code>\n"
+        f"📦 Jami {len(parts)} ta qism: {parts_text}\n\n"
+        f"<i>User {code} kodini yuborganda qism tanlash tugmalari chiqadi.</i>"
+    )
+    await cb.answer("✅ Tayyor!")
+
 
 
 @app.on_message(filters.chat(SAVED_MOVIE) & filters.reply & filters.text)
 async def update_trailer_link(client, msg):
-    if msg.reply_to_message.from_user.is_self and "FILM KODI:" in (msg.reply_to_message.text or ""):
+    reply = msg.reply_to_message
+    is_self = (reply.from_user and reply.from_user.is_self) or (reply.sender_chat and reply.sender_chat.id == (await client.get_me()).id)
+    if is_self and "FILM KODI:" in (reply.text or ""):
         if "instagram.com" in msg.text:
             try:
                 text = msg.reply_to_message.text
