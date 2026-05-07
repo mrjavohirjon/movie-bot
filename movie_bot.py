@@ -24,14 +24,14 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8371879333:AAGrSXYY7LBXB8CBw5z-vJqUgnPMw-hcYX0"
+BOT_TOKEN = "8371879333:AAEmCt4s8ULyfCblrADfYPpWB_gdAm2b8rk"
 MONGO_URL = "mongodb+srv://mrjavohirjon:javohir123@cluster0.gzf5ecj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
 SAVED_MOVIE = -1003797574060
 KINO1CHRA_CHANNEL = -1003897814741
 MAIN_CHANNEL = "@KinoDrift"
-SAVE_SHORTS = -1003822143783
+SAVE_SHORTS = -1003935780665
 NOTIFIER_CHANNEL = "@Kinodrift_Notifier"
 
 ALLOWED_GENRES = [
@@ -217,13 +217,21 @@ def addpart_cancel_menu():
 import os
 from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
-from pyrogram.enums import ChatMemberStatus
 
 # Eslatma: is_admin va users_col bu yerda aniqlangan bo'lishi kerak
 # from database import users_col, is_admin
 
-async def check_force_join(client, msg):
+async def check_force_join(client: Client, msg: Message | CallbackQuery):
+    """
+    Majburiy obuna tekshiruvi.
+    Kanallar MongoDB'da saqlanadi: {"id": "-100...", "link": "...", "title": "..."}
+
+    Ochiq kanal  → link: https://t.me/username       → getChatMember API orqali
+    Yopiq kanal  → link: https://t.me/+XXXX (yoki joinchat) → getChatMember API + join request check
+    """
     uid = msg.from_user.id
+
+    # ── 1. Admin va VIP larni o'tkazib yuboramiz ──────────────────────────
     if is_admin(uid):
         return True
 
@@ -231,53 +239,114 @@ async def check_force_join(client, msg):
     if user_db_data and user_db_data.get("is_vip", False):
         return True
 
+    # ── 2. Kanallar ro'yxatini MongoDB'dan olamiz ─────────────────────────
     conf = get_config()
     channels = conf.get("mandatory_channels", [])
 
     if not channels:
         return True
 
-    unsubscribed = []
+    unsubscribed_count = 0
+    buttons = []
 
     for chan in channels:
-        try:
-            chat_id = chan["id"]
-            if isinstance(chat_id, str) and chat_id.startswith("-100"):
-                chat_id = int(chat_id)
+        ch_id_str = str(chan.get("id", ""))
+        link      = chan.get("link", "#")
+        title     = chan.get("title", "Kanal")
+        is_member = False
+        has_join_request = False
 
+        # ── Ochiq/Yopiq kanal: link "t.me/+" mavjudligi orqali aniqlash ───
+        is_private = ("t.me/+" in link or "joinchat" in link)
+
+        try:
+            # getChatMember orqali tekshirish
+            chat_id = int(ch_id_str) if ch_id_str.lstrip("-").isdigit() else ch_id_str
             member = await client.get_chat_member(chat_id, uid)
-            if member.status in [
+            
+            # a'zolar: MEMBER, ADMINISTRATOR, OWNER
+            is_member = member.status in [
                 ChatMemberStatus.MEMBER,
                 ChatMemberStatus.ADMINISTRATOR,
-                ChatMemberStatus.OWNER
-            ]:
-                continue
-            else:
-                unsubscribed.append(chan)
+                ChatMemberStatus.OWNER,
+            ]
+            
+        except UserNotParticipant:
+            # Foydalanuvchi kanal a'zosi emas
+            is_member = False
+            
+            # Yopiq kanal uchun join request ni tekshirish
+            if is_private:
+                try:
+                    # Yopiq kanalga join request tekshirish
+                    # Bot admin bo'lsa, getChatMembers orqali tekshirish mumkin
+                    chat_id = int(ch_id_str) if ch_id_str.lstrip("-").isdigit() else ch_id_str
+                    
+                    # Pyrogram'da join_requests olish uchun get_chat_members bilan RESTRICTED filter ishlatamiz
+                    # Yoki getPendingJoinRequests (agar mavjud bo'lsa)
+                    # Hozircha asosiy tekshiruvga tayanamiz - agar error bo'lsa join request yuborish kerak
+                    # TODO: Pyrogram versiyasiga qarab pending requests ni tekshirish
+                    
+                    # Vaqtincha - join request yo'q deb hisoblaymiz
+                    has_join_request = False
+                    
+                except Exception:
+                    pass
+                    
         except Exception as e:
-            print(f"FORCE JOIN TEKSHIRISHDA XATO: {chan.get('id')} — {e}")
-            unsubscribed.append(chan)
+            # Boshqa xato: kanal topilmadi, bot admin emas, etc.
+            print(f"[ForceJoin] Tekshirishda xato ({ch_id_str}): {e}")
+            is_member = False
 
-    if unsubscribed:
-        buttons = []
-        for index, ch in enumerate(unsubscribed, start=1):
-            link = ch.get('link')
-            buttons.append([InlineKeyboardButton(text=f"➕ {index}-kanal", url=link)])
-
-        start_param = msg.command[1] if hasattr(msg, "command") and msg.command and len(msg.command) > 1 else "start"
-        me = await client.get_me()
-        join_url = f"https://t.me/{me.username}?start={start_param}"
-        buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", url=join_url)])
-
-        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling:"
-
-        if hasattr(msg, "data"):
-            await msg.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        # ── Status ikona
+        if is_member:
+            emoji = "✅"
+            status_text = ""
+        elif has_join_request:
+            emoji = "⏳"  # Pending request
+            status_text = " (so'rov yuborildi)"
         else:
-            await msg.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
-        return False
+            emoji = "❌"
+            status_text = ""
+        
+        buttons.append([InlineKeyboardButton(text=f"{emoji} {title}{status_text}", url=link)])
 
-    return True
+        if not is_member:
+            unsubscribed_count += 1
+
+    # ── 3. Barchaga a'zo bo'lsa ─────────────────────────────────────────
+    if unsubscribed_count == 0:
+        return True
+
+    # ── 4. Obuna bo'lmagan bo'lsa xabar yuboramiz ───────────────────────
+    buttons.append([
+        InlineKeyboardButton(text="🔄 TEKSHIRISH", callback_data="obuna")
+    ])
+
+    text = (
+        "🤖 <b>Botdan to'liq foydalanish uchun</b> "
+        "quyidagi kanallarga obuna bo'ling 👇\n\n"
+        "<i>A'zo bo'lib, '🔄 TEKSHIRISH' tugmasini bosing.</i>"
+    )
+
+    if isinstance(msg, CallbackQuery):
+        await msg.answer("⚠️ Iltimos, barcha kanallarga a'zo bo'ling!", show_alert=True)
+        try:
+            await msg.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                disable_web_page_preview=True,
+            )
+        except MessageNotModified:
+            pass
+    else:
+        await msg.reply(
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True,
+        )
+
+    return False
 
 def get_movie_list(page=1, genre=None):
     items_per_page = 10
@@ -1078,6 +1147,43 @@ async def inline_search(client, query):
 
 
 # ==========================================
+#   FORWARD → KANAL ID TOPISH (admin uchun)
+# ==========================================
+
+@app.on_message(filters.forwarded & filters.private)
+async def get_channel_id_by_forward(client, msg):
+    if not msg.from_user or not is_admin(msg.from_user.id):
+        return
+
+    uid = msg.from_user.id
+    user_state = next((s for s in broadcast_wait if isinstance(s, str) and s.endswith(f"_{uid}")), None)
+
+    chat_id = None
+    chat_title = None
+
+    if msg.forward_from_chat:
+        chat_id = msg.forward_from_chat.id
+        chat_title = msg.forward_from_chat.title
+
+    if not chat_id:
+        return
+
+    if user_state and user_state.startswith("addchan_"):
+        await msg.reply(
+            f"✅ <b>Kanal ID topildi!</b>\n\n"
+            f"📢 Nomi: <b>{chat_title}</b>\n"
+            f"🆔 ID: <code>{chat_id}</code>\n\n"
+            f"Endi quyidagi formatda yuboring:\n"
+            f"<code>{chat_id}++https://t.me/+InviteLinkIngiz</code>"
+        )
+    else:
+        await msg.reply(
+            f"📢 <b>{chat_title}</b>\n"
+            f"🆔 Kanal ID: <code>{chat_id}</code>"
+        )
+
+
+# ==========================================
 #               START HANDLER
 # ==========================================
 
@@ -1201,6 +1307,25 @@ async def send_movie_final(client, cb):
 # ==========================================
 #           CALLBACK HANDLERS
 # ==========================================
+
+@app.on_callback_query(filters.regex("^obuna$"))
+async def obuna_check_callback(client, query):
+    """
+    '🔄 TEKSHIRISH' tugmasi uchun callback handler.
+    Majburiy kanallar tekshirmasini qayta-qayta o'tkazadi.
+    """
+    if await check_force_join(client, query):
+        # Agar barcha kanallarga a'zo bo'lsa, xabar tasdiqlash
+        try:
+            await query.message.delete()
+        except:
+            pass
+        await query.answer("✅ Barcha kanallarga a'zo bo'lib qo'yilganiz! Xush kelibsiz.", show_alert=True)
+        uid = query.from_user.id
+        await client.send_message(uid, "✅ Obuna tasdiqlandi! Xush kelibsiz.", reply_markup=user_menu(uid))
+    else:
+        # Hali ham kanallarga a'zo emas
+        await query.answer("⚠️ Iltimos, barcha kanallarga a'zo bo'ling va qayta bosing.", show_alert=True)
 
 @app.on_callback_query(filters.regex("^check_"))
 async def check_callback(client, query):
@@ -1452,6 +1577,61 @@ async def handle_shorts_processing(client, msg):
 
 
 # ==========================================
+#   FORWARD ORQALI KANAL QO'SHISH HANDLER
+# ==========================================
+
+@app.on_message(filters.forwarded & filters.private)
+async def handle_forwarded(client, msg):
+    """
+    Admin 'Kanal qo'shish' holatida kanaldan forward qilganda
+    kanal ma'lumotlarini avtomatik oladi.
+    Yopiq kanallar uchun eng ishonchli usul.
+    """
+    if not msg.from_user:
+        return
+    uid = msg.from_user.id
+
+    user_state = next(
+        (s for s in broadcast_wait if isinstance(s, str) and s.endswith(f"_{uid}")),
+        None
+    )
+    if not user_state or not user_state.startswith("addchan_"):
+        return
+
+    fwd_chat = msg.forward_from_chat
+    if not fwd_chat:
+        return
+
+    ch_id = fwd_chat.id
+    title = fwd_chat.title or "Nomsiz kanal"
+
+    if fwd_chat.username:
+        link = f"https://t.me/{fwd_chat.username}"
+    elif fwd_chat.invite_link:
+        link = fwd_chat.invite_link
+    else:
+        try:
+            link = await client.export_chat_invite_link(ch_id)
+        except Exception:
+            link = f"https://t.me/c/{str(ch_id)[4:]}/1"
+
+    new_ch = {"id": str(ch_id), "link": link, "title": title}
+    db.settings.update_one(
+        {"type": "bot_config"},
+        {"$addToSet": {"mandatory_channels": new_ch}},
+        upsert=True
+    )
+    broadcast_wait.discard(user_state)
+    await msg.reply(
+        f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\n\n"
+        f"📢 Nomi: <b>{title}</b>\n"
+        f"🆔 ID: <code>{ch_id}</code>\n"
+        f"🔗 Link: {link}",
+        reply_markup=admin_menu()
+    )
+
+
+# ==========================================
 #          ASOSIY TEXT HANDLER
 # ==========================================
 
@@ -1561,32 +1741,120 @@ async def handle_text(client, msg):
             ch_id = None
             link = None
             title = None
-            try:
-                if txt_input.startswith("-100"):
-                    chat = await client.get_chat(txt_input)
+
+            # ══════════════════════════════════════════════════════════
+            # FORMAT 1 — YOPIQ KANAL: -100ID++https://t.me/+XXXX
+            # Bot get_chat() bilan invite linkni resolve qila olmaydi
+            # (BOT_METHOD_INVALID), shuning uchun to'g'ridan-to'g'ri saqlaymiz.
+            # ══════════════════════════════════════════════════════════
+            if "++" in txt_input:
+                parts = txt_input.split("++", 1)
+                raw_id   = parts[0].strip()
+                raw_link = parts[1].strip()
+
+                if not raw_id.lstrip("-").isdigit():
+                    return await msg.reply(
+                        "❌ <b>ID noto'g'ri!</b>\n\n"
+                        "Format: <code>-100XXXXXXXXXX++https://t.me/+XXXX</code>",
+                        reply_markup=cancel_menu()
+                    )
+
+                ch_id = int(raw_id)
+                link  = raw_link
+
+                # get_chat() chaqirmaymiz — BOT_METHOD_INVALID xatosi beradi
+                # Kanal nomi keyinroq forward orqali yangilanadi
+                title = "Yopiq kanal"
+
+            # ══════════════════════════════════════════════════════════
+            # FORMAT 2 — OCHIQ KANAL: @username
+            # ══════════════════════════════════════════════════════════
+            elif txt_input.startswith("@"):
+                try:
+                    chat  = await client.get_chat(txt_input)
                     ch_id = chat.id
                     title = chat.title
-                    link = chat.invite_link or f"https://t.me/c/{str(ch_id)[4:]}/1"
-                elif txt_input.startswith("@"):
-                    chat = await client.get_chat(txt_input)
+                    link  = f"https://t.me/{txt_input[1:]}"
+                except Exception as e:
+                    return await msg.reply(
+                        f"❌ Kanal topilmadi: <code>{e}</code>",
+                        reply_markup=cancel_menu()
+                    )
+
+            # ══════════════════════════════════════════════════════════
+            # FORMAT 3 — OCHIQ KANAL: https://t.me/username
+            # ══════════════════════════════════════════════════════════
+            elif "t.me/" in txt_input and "t.me/+" not in txt_input and "joinchat" not in txt_input:
+                try:
+                    path  = txt_input.split("t.me/")[1].split("/")[0]
+                    chat  = await client.get_chat(f"@{path}")
                     ch_id = chat.id
                     title = chat.title
-                    link = f"https://t.me/{txt_input[1:]}"
-                elif "t.me/" in txt_input and "+" not in txt_input and "/joinchat/" not in txt_input:
-                    path = txt_input.split("t.me/")[1].split("/")[0]
-                    chat = await client.get_chat(f"@{path}")
+                    link  = txt_input
+                except Exception as e:
+                    return await msg.reply(
+                        f"❌ Kanal topilmadi: <code>{e}</code>",
+                        reply_markup=cancel_menu()
+                    )
+
+            # ══════════════════════════════════════════════════════════
+            # FORMAT 4 — faqat invite link (https://t.me/+XXXX) keldi
+            # Botlar buni resolve qila olmaydi → foydalanuvchiga tushuntirish
+            # ══════════════════════════════════════════════════════════
+            elif "t.me/+" in txt_input or "joinchat" in txt_input:
+                return await msg.reply(
+                    "⚠️ <b>Yopiq kanal qo'shish uchun to'g'ri format:</b>\n\n"
+                    "<code>-100XXXXXXXXXX++https://t.me/+XXXX</code>\n\n"
+                    "Masalan:\n"
+                    "<code>-1002599312011++https://t.me/+e_Tha3g-mrliYTli</code>\n\n"
+                    "📌 <b>Kanal ID ni qanday topish mumkin?</b>\n"
+                    "• Botni kanalga Admin qiling\n"
+                    "• Kanaldan istalgan xabarni menga forward qiling\n"
+                    "• Men ID ni aytaman",
+                    reply_markup=cancel_menu()
+                )
+
+            # ══════════════════════════════════════════════════════════
+            # FORMAT 5 — faqat ID (-100...) keldi
+            # ══════════════════════════════════════════════════════════
+            elif txt_input.startswith("-100"):
+                try:
+                    chat  = await client.get_chat(int(txt_input))
                     ch_id = chat.id
                     title = chat.title
-                    link = txt_input
-                elif "t.me/+" in txt_input or "joinchat" in txt_input:
-                    chat = await client.get_chat(txt_input)
-                    ch_id = chat.id
-                    title = chat.title
-                    link = txt_input
-                else:
-                    return await msg.reply("❌ Noto'g'ri format! ID, Username yoki Link yuboring.")
-            except Exception as e:
-                return await msg.reply(f"❌ Bot kanalni topa olmadi!\nXatolik: `{e}`")
+                    if chat.username:
+                        link = f"https://t.me/{chat.username}"
+                    elif chat.invite_link:
+                        link = chat.invite_link
+                    else:
+                        try:
+                            link = await client.export_chat_invite_link(ch_id)
+                        except Exception:
+                            link = f"https://t.me/c/{str(ch_id)[4:]}/1"
+                except Exception as e:
+                    if "PEER_ID_INVALID" in str(e):
+                        return await msg.reply(
+                            "⚠️ <b>Kanal topilmadi!</b>\n\n"
+                            "Bot hali bu kanalga qo'shilmagan.\n\n"
+                            "✅ <b>Yopiq kanal uchun:</b>\n"
+                            "<code>-100ID++https://t.me/+InviteLink</code>\n\n"
+                            "Masalan:\n"
+                            f"<code>{txt_input}++https://t.me/+XXXX</code>",
+                            reply_markup=cancel_menu()
+                        )
+                    return await msg.reply(
+                        f"❌ Xatolik: <code>{e}</code>",
+                        reply_markup=cancel_menu()
+                    )
+            else:
+                return await msg.reply(
+                    "❌ <b>Noto'g'ri format!</b>\n\n"
+                    "📌 Ochiq kanal:\n"
+                    "  <code>@username</code>\n\n"
+                    "📌 Yopiq kanal:\n"
+                    "  <code>-100ID++https://t.me/+InviteLink</code>",
+                    reply_markup=cancel_menu()
+                )
 
             if ch_id and link:
                 new_ch = {"id": str(ch_id), "link": link, "title": title or "Nomsiz kanal"}
