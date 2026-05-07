@@ -1,8 +1,6 @@
 import asyncio
 import math
 import re
-from pyrogram.enums import ChatMemberStatus
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pyrogram import enums
@@ -26,7 +24,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ==========================================
 API_ID = 38119035
 API_HASH = "0f84597433eacb749fd482ad238a104e"
-BOT_TOKEN = "8509897503:AAHjjen_leAkcvMZNhAZRkb6tUtw7d-GEQo"
+BOT_TOKEN = "8371879333:AAGrSXYY7LBXB8CBw5z-vJqUgnPMw-hcYX0"
 MONGO_URL = "mongodb+srv://mrjavohirjon:javohir123@cluster0.gzf5ecj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
@@ -243,68 +241,35 @@ async def check_force_join(client, msg):
 
     for chan in channels:
         try:
-            # 1. Ma'lumotlarni aniqlab olamiz (Obyekt yoki Matn formatida bo'lsa ham)
-            if isinstance(chan, dict):
-                # Agar kanal bazada {'id': '...', 'link': '...'} ko'rinishida bo'lsa
-                chat_id = chan.get('id')
-                invite_link = chan.get('link')
-            elif isinstance(chan, str):
-                # Agar kanal siz aytgan '-100xxx++https://...' ko'rinishida bo'lsa
-                if "++" in chan:
-                    chat_id_part, invite_link = chan.split("++", 1)
-                    chat_id = chat_id_part
-                else:
-                    chat_id = chan
-                    invite_link = f"https://t.me/{chan.replace('@','')}"
-            else:
-                continue
-
-            # ID ni raqamga o'tkazamiz (agar -100 bilan boshlansa)
+            chat_id = chan["id"]
             if isinstance(chat_id, str) and chat_id.startswith("-100"):
                 chat_id = int(chat_id)
 
-            is_member = False
-            
-            # 2. API orqali tekshirish
-            try:
-                member = await client.get_chat_member(chat_id, uid)
-                if member.status in [
-                    ChatMemberStatus.MEMBER,
-                    ChatMemberStatus.ADMINISTRATOR,
-                    ChatMemberStatus.OWNER
-                ]:
-                    is_member = True
-            except Exception:
-                # Agar API orqali topilmasa (masalan private kanal bo'lsa)
-                pass
-
-            # 3. Join Request bazasidan tekshirish (PHP mantiqi)
-            if not is_member:
-                is_requested = requests_col.find_one({
-                    "user_id": uid, 
-                    "chat_id": chat_id if isinstance(chat_id, int) else chat_id
-                })
-                if is_requested:
-                    is_member = True
-
-            if not is_member:
-                unsubscribed.append({"link": invite_link})
-
+            member = await client.get_chat_member(chat_id, uid)
+            if member.status in [
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER
+            ]:
+                continue
+            else:
+                unsubscribed.append(chan)
         except Exception as e:
-            print(f"FORCE JOIN XATO: {chan} — {e}")
-            continue
+            print(f"FORCE JOIN TEKSHIRISHDA XATO: {chan.get('id')} — {e}")
+            unsubscribed.append(chan)
 
     if unsubscribed:
         buttons = []
         for index, ch in enumerate(unsubscribed, start=1):
-            buttons.append([InlineKeyboardButton(text=f"📢 {index}-kanal", url=ch['link'])])
+            link = ch.get('link')
+            buttons.append([InlineKeyboardButton(text=f"➕ {index}-kanal", url=link)])
 
         start_param = msg.command[1] if hasattr(msg, "command") and msg.command and len(msg.command) > 1 else "start"
         me = await client.get_me()
         join_url = f"https://t.me/{me.username}?start={start_param}"
         buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", url=join_url)])
 
-        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun quyidagi kanallarga obuna bo'ling yoki a'zo bo'lish so'rovini yuboring:"
+        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling:"
 
         if hasattr(msg, "data"):
             await msg.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -313,6 +278,7 @@ async def check_force_join(client, msg):
         return False
 
     return True
+
 def get_movie_list(page=1, genre=None):
     items_per_page = 10
     query = {"genres": genre} if genre else {}
@@ -2125,18 +2091,6 @@ async def get_leaderboard_text():
     text += "✅ 1 hafta davomida amal qiladi\n\n"
     text += "⏰ <i>Har yakshanba soat 20:00 da yangilanadi.</i>"
     return text
-
-@app.on_chat_join_request()
-async def handle_join_request(client, request):
-    try:
-        # So'rov yuborgan foydalanuvchini 'requests_col' bazasiga saqlash
-        requests_col.update_one(
-            {"user_id": request.from_user.id, "chat_id": request.chat.id},
-            {"$set": {"status": "pending", "date": datetime.now(UZ_TZ)}},
-            upsert=True
-        )
-    except Exception as e:
-        print(f"Join Request saqlashda xato: {e}")
 
 
 # ==========================================
