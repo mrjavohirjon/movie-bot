@@ -241,18 +241,31 @@ async def check_force_join(client, msg):
 
     unsubscribed = []
 
-    for chan_str in channels:
+    for chan in channels:
         try:
-            # PHP formatini parse qilish: -100xxx++https://t.me/...
-            if "++" in chan_str:
-                chat_id_part, invite_link = chan_str.split("++", 1)
-                chat_id = int(chat_id_part)
+            # 1. Ma'lumotlarni aniqlab olamiz (Obyekt yoki Matn formatida bo'lsa ham)
+            if isinstance(chan, dict):
+                # Agar kanal bazada {'id': '...', 'link': '...'} ko'rinishida bo'lsa
+                chat_id = chan.get('id')
+                invite_link = chan.get('link')
+            elif isinstance(chan, str):
+                # Agar kanal siz aytgan '-100xxx++https://...' ko'rinishida bo'lsa
+                if "++" in chan:
+                    chat_id_part, invite_link = chan.split("++", 1)
+                    chat_id = chat_id_part
+                else:
+                    chat_id = chan
+                    invite_link = f"https://t.me/{chan.replace('@','')}"
             else:
-                chat_id = int(chan_str) if chan_str.startswith("-100") else chan_str
-                invite_link = f"https://t.me/{chan_str.replace('@','')}"
+                continue
+
+            # ID ni raqamga o'tkazamiz (agar -100 bilan boshlansa)
+            if isinstance(chat_id, str) and chat_id.startswith("-100"):
+                chat_id = int(chat_id)
 
             is_member = False
-            # 1-qadam: API orqali tekshirish
+            
+            # 2. API orqali tekshirish
             try:
                 member = await client.get_chat_member(chat_id, uid)
                 if member.status in [
@@ -262,13 +275,14 @@ async def check_force_join(client, msg):
                 ]:
                     is_member = True
             except Exception:
+                # Agar API orqali topilmasa (masalan private kanal bo'lsa)
                 pass
 
-            # 2-qadam: Agar API dan o'tmasa, Join Request bazasidan tekshirish (PHP mantiqi)
+            # 3. Join Request bazasidan tekshirish (PHP mantiqi)
             if not is_member:
                 is_requested = requests_col.find_one({
                     "user_id": uid, 
-                    "chat_id": chat_id
+                    "chat_id": chat_id if isinstance(chat_id, int) else chat_id
                 })
                 if is_requested:
                     is_member = True
@@ -277,7 +291,7 @@ async def check_force_join(client, msg):
                 unsubscribed.append({"link": invite_link})
 
         except Exception as e:
-            print(f"FORCE JOIN XATO: {chan_str} — {e}")
+            print(f"FORCE JOIN XATO: {chan} — {e}")
             continue
 
     if unsubscribed:
@@ -285,13 +299,12 @@ async def check_force_join(client, msg):
         for index, ch in enumerate(unsubscribed, start=1):
             buttons.append([InlineKeyboardButton(text=f"📢 {index}-kanal", url=ch['link'])])
 
-        # Start parametrini saqlab qolish
         start_param = msg.command[1] if hasattr(msg, "command") and msg.command and len(msg.command) > 1 else "start"
         me = await client.get_me()
         join_url = f"https://t.me/{me.username}?start={start_param}"
         buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", url=join_url)])
 
-        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun quyidagi kanallarga a'zo bo'ling yoki a'zo bo'lish so'rovini yuboring:"
+        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun quyidagi kanallarga obuna bo'ling yoki a'zo bo'lish so'rovini yuboring:"
 
         if hasattr(msg, "data"):
             await msg.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -300,7 +313,6 @@ async def check_force_join(client, msg):
         return False
 
     return True
-
 def get_movie_list(page=1, genre=None):
     items_per_page = 10
     query = {"genres": genre} if genre else {}
