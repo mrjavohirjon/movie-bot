@@ -1600,32 +1600,114 @@ async def handle_text(client, msg):
             ch_id = None
             link = None
             title = None
-            try:
-                if txt_input.startswith("-100"):
-                    chat = await client.get_chat(txt_input)
+
+            # ── Yopiq kanal: faqat invite link qabul qilinadi ─────────────
+            is_private_link = "t.me/+" in txt_input or "joinchat" in txt_input
+
+            # ── Faqat ID yuborilgan, lekin invite link yo'q ────────────────
+            is_only_id = txt_input.startswith("-100") and not is_private_link
+
+            if is_only_id:
+                # Bot kanalda admin bo'lsa get_chat ishlaydi,
+                # aks holda PEER_ID_INVALID beradi.
+                # Shuning uchun foydalanuvchidan invite linkni ham so'raymiz.
+                try:
+                    chat = await client.get_chat(int(txt_input))
                     ch_id = chat.id
                     title = chat.title
-                    link = chat.invite_link or f"https://t.me/c/{str(ch_id)[4:]}/1"
-                elif txt_input.startswith("@"):
+                    invite_link = chat.invite_link
+                    if not invite_link:
+                        # Kanal ochiq bo'lsa username orqali link hosil qilamiz
+                        if chat.username:
+                            invite_link = f"https://t.me/{chat.username}"
+                        else:
+                            # Yopiq kanal: invite linkni generate qilamiz
+                            try:
+                                invite_link = await client.export_chat_invite_link(ch_id)
+                            except Exception:
+                                invite_link = f"https://t.me/c/{str(ch_id)[4:]}/1"
+                    link = invite_link
+                except Exception as e:
+                    err = str(e)
+                    if "PEER_ID_INVALID" in err:
+                        return await msg.reply(
+                            "⚠️ <b>Kanal ID topilmadi!</b>\n\n"
+                            "Bu xato odatda quyidagi sabablarda yuzaga keladi:\n"
+                            "• Bot hali o'sha kanalga qo'shilmagan\n\n"
+                            "✅ <b>To'g'ri yo'l:</b>\n"
+                            "1️⃣ Botni kanalga <b>Admin</b> qiling\n"
+                            "2️⃣ Ochiq kanal uchun: <code>@username</code> yuboring\n"
+                            "3️⃣ Yopiq kanal uchun: invite linkni yuboring\n"
+                            "   <code>https://t.me/+XXXXXXXX</code>",
+                            reply_markup=cancel_menu()
+                        )
+                    return await msg.reply(
+                        f"❌ Xatolik yuz berdi:\n<code>{e}</code>",
+                        reply_markup=cancel_menu()
+                    )
+
+            elif txt_input.startswith("@"):
+                try:
                     chat = await client.get_chat(txt_input)
                     ch_id = chat.id
                     title = chat.title
                     link = f"https://t.me/{txt_input[1:]}"
-                elif "t.me/" in txt_input and "+" not in txt_input and "/joinchat/" not in txt_input:
+                except Exception as e:
+                    return await msg.reply(
+                        f"❌ Kanal topilmadi: <code>{e}</code>\n\n"
+                        "Bot kanalga admin qilinganmi?",
+                        reply_markup=cancel_menu()
+                    )
+
+            elif "t.me/" in txt_input and not is_private_link:
+                # Ochiq kanal linki: https://t.me/username
+                try:
                     path = txt_input.split("t.me/")[1].split("/")[0]
                     chat = await client.get_chat(f"@{path}")
                     ch_id = chat.id
                     title = chat.title
                     link = txt_input
-                elif "t.me/+" in txt_input or "joinchat" in txt_input:
+                except Exception as e:
+                    return await msg.reply(
+                        f"❌ Kanal topilmadi: <code>{e}</code>",
+                        reply_markup=cancel_menu()
+                    )
+
+            elif is_private_link:
+                # Yopiq kanal: https://t.me/+XXXX
+                try:
                     chat = await client.get_chat(txt_input)
                     ch_id = chat.id
                     title = chat.title
                     link = txt_input
-                else:
-                    return await msg.reply("❌ Noto'g'ri format! ID, Username yoki Link yuboring.")
-            except Exception as e:
-                return await msg.reply(f"❌ Bot kanalni topa olmadi!\nXatolik: `{e}`")
+                except Exception as e:
+                    err = str(e)
+                    if "INVITE_HASH_INVALID" in err or "USERNAME_INVALID" in err:
+                        return await msg.reply(
+                            "❌ <b>Invite link noto'g'ri yoki eskirgan!</b>\n\n"
+                            "Yangi invite link olib qayta yuboring.",
+                            reply_markup=cancel_menu()
+                        )
+                    if "PEER_ID_INVALID" in err:
+                        return await msg.reply(
+                            "⚠️ <b>Kanal topilmadi!</b>\n\n"
+                            "Botni avval kanalga <b>Admin</b> qiling, so'ng qayta urinib ko'ring.",
+                            reply_markup=cancel_menu()
+                        )
+                    return await msg.reply(
+                        f"❌ Xatolik: <code>{e}</code>",
+                        reply_markup=cancel_menu()
+                    )
+            else:
+                return await msg.reply(
+                    "❌ <b>Noto'g'ri format!</b>\n\n"
+                    "Quyidagilardan birini yuboring:\n"
+                    "• <code>@kanalUsername</code> — ochiq kanal\n"
+                    "• <code>https://t.me/kanalUsername</code> — ochiq kanal\n"
+                    "• <code>https://t.me/+XXXXXXXX</code> — yopiq kanal\n"
+                    "• <code>-100XXXXXXXXXX</code> — kanal ID (bot admin bo'lishi shart)",
+                    reply_markup=cancel_menu()
+                )
 
             if ch_id and link:
                 new_ch = {"id": str(ch_id), "link": link, "title": title or "Nomsiz kanal"}
