@@ -3,7 +3,6 @@ import math
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from urllib.parse import quote
 from pyrogram import enums
 from pyrogram.enums import ChatMemberStatus
 from pyrogram import Client, filters, idle
@@ -66,21 +65,14 @@ comment_wait = {}
 edit_wait = {}
 
 # ==========================================
-#   STATE TIZIMI: QISM QO'SHISH
+#   STATE TIZIMI: QISM QO'SHISH (faqat private)
 #
 #   addpart_state[user_id] = {
-#       "code": int,          — kino kodi
-#       "part": int,          — qism raqami
-#       "source": "private"   — private yoki channel
-#   }
-#
-#   channel_addpart_wait[msg_id] = {
 #       "code": int,
-#       "part": int
+#       "part": int,
 #   }
 # ==========================================
-addpart_state = {}          # Private chat: admin_id → state
-channel_addpart_wait = {}   # Kanal: kutish xabari message_id → state
+addpart_state = {}
 
 
 # ==========================================
@@ -193,7 +185,8 @@ def movie_extra_kb(code, is_admin_user=False, insta_link=None):
             InlineKeyboardButton("🗑 O'chirish", callback_data=f"rm_{code}")
         ])
         buttons.append([
-            InlineKeyboardButton("➕ Qism qo'shish", callback_data=f"ap_start_{code}_auto")
+            InlineKeyboardButton("➕ Qism qo'shish", callback_data=f"ap_start_{code}"),
+            InlineKeyboardButton("➖ Qism o'chirish", callback_data=f"ap_remove_{code}")
         ])
     return InlineKeyboardMarkup(buttons)
 
@@ -211,7 +204,6 @@ def cancel_menu():
     return ReplyKeyboardMarkup([[KeyboardButton("❌ Bekor qilish")]], resize_keyboard=True)
 
 def addpart_cancel_menu():
-    """Qism qo'shish jarayonida bekor qilish + tayyor tugmasi"""
     return ReplyKeyboardMarkup([
         [KeyboardButton("✅ Qismlar tayyor, tugat")],
         [KeyboardButton("❌ Bekor qilish")]
@@ -447,7 +439,7 @@ async def handle_movie_delivery(client, user_id, movie_code):
 
     parts = movie.get("parts", [])
 
-    # ─── KO'P QISMLI KINO: tugmalar chiqar ───
+    # ─── KO'P QISMLI KINO ───
     if parts and len(parts) > 1:
         title_line = movie.get("title", "Kino").split('\n')[0]
         avg_rating = movie.get('avg_rating', 0.0)
@@ -490,7 +482,7 @@ async def handle_movie_delivery(client, user_id, movie_code):
         )
         return True
 
-    # ─── BIR QISMLI KINO: to'g'ridan yuborish ───
+    # ─── BIR QISMLI KINO ───
     file_id = movie.get("file_id")
     if not file_id and parts and len(parts) == 1:
         file_id = parts[0]["file_id"]
@@ -613,13 +605,142 @@ async def send_all_parts_cb(client, cb):
 
 
 # ==========================================
-#   📦 ADMIN: QISM QO'SHISH BUYRUQLARI
+#   📦 ADMIN: QISM QO'SHISH — FAQAT PRIVATE
+#
+#   Qanday ishlaydi:
+#   1. Admin "➕ Qism qo'shish" tugmasini bosadi
+#   2. Bot private chatda video kutadi (addpart_state)
+#   3. Admin video yuboradi → qism saqlanadi
+#   4. "✅ Qismlar tayyor, tugat" → jarayon tugaydi
+# ==========================================
+
+@app.on_callback_query(filters.regex(r"^ap_start_(\d+)$"))
+async def ap_start_cb(client, cb):
+    """Kino kartasidagi '➕ Qism qo'shish' tugmasi"""
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
+
+    movie_code = int(cb.data.split("_")[2])
+    movie = movies_col.find_one({"code": movie_code})
+    if not movie:
+        return await cb.answer("❌ Kino topilmadi!", show_alert=True)
+
+    uid = cb.from_user.id
+    parts = movie.get("parts", [])
+    title_line = movie.get("title", "Kino").split('\n')[0]
+    existing_nums = sorted([p["part"] for p in parts])
+    next_part = (max(existing_nums) + 1) if existing_nums else 1
+    existing_str = " | ".join([
+        p.get("label", f"{p['part']}-qism")
+        for p in sorted(parts, key=lambda x: x["part"])
+    ]) or "hali yo'q"
+
+    # State saqlash
+    addpart_state[uid] = {"code": movie_code, "part": next_part}
+
+    await cb.answer("✅ Botga o'ting va video yuboring!", show_alert=True)
+
+    # Botning private chatida xabar yuborish
+    bot_me = await client.get_me()
+    try:
+        await client.send_message(
+            chat_id=uid,
+            text=(
+                f"🎬 <b>{title_line}</b>\n"
+                f"🔑 Kod: <code>{movie_code}</code>\n"
+                f"📦 Mavjud qismlar: {existing_str}\n\n"
+                f"⬇️ Endi <b>{next_part}-qism</b> videosini yuboring.\n"
+                f"Bir nechta qism bo'lsa — ketma-ket yuboring.\n\n"
+                f"<i>Tugatgach tugmani bosing.</i>"
+            ),
+            reply_markup=addpart_cancel_menu()
+        )
+    except Exception as e:
+        print(f"Private xabar yuborishda xato: {e}")
+        await cb.message.reply(
+            f"⚠️ Sizga private xabar yuborib bo'lmadi.\n"
+            f"Iltimos, <a href='https://t.me/{bot_me.username}'>botga o'ting</a> va /addpart {movie_code} yuboring.",
+            disable_web_page_preview=True
+        )
+
+
+@app.on_callback_query(filters.regex(r"^ap_remove_(\d+)$"))
+async def ap_remove_cb(client, cb):
+    """Kino kartasidagi '➖ Qism o'chirish' tugmasi"""
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
+
+    movie_code = int(cb.data.split("_")[2])
+    movie = movies_col.find_one({"code": movie_code})
+    if not movie:
+        return await cb.answer("❌ Kino topilmadi!", show_alert=True)
+
+    parts = sorted(movie.get("parts", []), key=lambda x: x["part"])
+    if not parts:
+        return await cb.answer("❌ Bu kinoda qismlar yo'q!", show_alert=True)
+
+    title_line = movie.get("title", "Kino").split('\n')[0]
+    buttons = []
+    for p in parts:
+        label = p.get("label", f"{p['part']}-qism")
+        buttons.append([
+            InlineKeyboardButton(
+                f"🗑 {label}",
+                callback_data=f"ap_del_{movie_code}_{p['part']}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data=f"ap_delcancel_{movie_code}")])
+
+    await cb.message.reply(
+        f"🎬 <b>{title_line}</b>\n\nQaysi qismni o'chirmoqchisiz?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    await cb.answer()
+
+
+@app.on_callback_query(filters.regex(r"^ap_del_(\d+)_(\d+)$"))
+async def ap_del_part_cb(client, cb):
+    """Muayyan qismni o'chirish"""
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
+
+    _, _, movie_code, part_num = cb.data.split("_")
+    movie_code = int(movie_code)
+    part_num = int(part_num)
+
+    result = movies_col.update_one(
+        {"code": movie_code},
+        {"$pull": {"parts": {"part": part_num}}}
+    )
+
+    if result.modified_count > 0:
+        updated = movies_col.find_one({"code": movie_code})
+        remaining = len(updated.get("parts", []))
+        title_line = updated.get("title", "Kino").split('\n')[0]
+        await cb.message.edit_text(
+            f"✅ <b>{movie_code}-kinoning {part_num}-qismi o'chirildi.</b>\n\n"
+            f"🎬 {title_line}\n"
+            f"📊 Qolgan qismlar: <b>{remaining} ta</b>"
+        )
+    else:
+        await cb.answer("❌ Qism topilmadi!", show_alert=True)
+    await cb.answer()
+
+
+@app.on_callback_query(filters.regex(r"^ap_delcancel_(\d+)$"))
+async def ap_delcancel_cb(client, cb):
+    await cb.message.edit_text("❌ Bekor qilindi.")
+    await cb.answer()
+
+
+# ==========================================
+#   📦 ADMIN: /addpart BUYRUG'I (private)
 # ==========================================
 
 @app.on_message(filters.command("addpart") & filters.private)
 async def addpart_command(client, msg):
     """
-    /addpart 47    → 47-kinoning keyingi qismini qo'shish (avtomatik raqam)
+    /addpart 47    → 47-kinoning keyingi qismini qo'shish
     /addpart 47 3  → 47-kinoning aynan 3-qismini qo'shish
     """
     if not is_admin(msg.from_user.id):
@@ -641,7 +762,6 @@ async def addpart_command(client, msg):
 
     parts = movie.get("parts", [])
 
-    # Qism raqamini aniqlash
     if len(args) >= 2 and args[1].isdigit():
         part_num = int(args[1])
         if any(p["part"] == part_num for p in parts):
@@ -650,14 +770,15 @@ async def addpart_command(client, msg):
                 f"O'chirish: <code>/removepart {code} {part_num}</code>"
             )
     else:
-        # Avtomatik: keyingi qism raqami
         existing_nums = sorted([p["part"] for p in parts])
         part_num = (max(existing_nums) + 1) if existing_nums else 1
 
     title_line = movie.get("title", "Kino").split('\n')[0]
-    existing_parts = " | ".join([p.get("label", f"{p['part']}-qism") for p in sorted(parts, key=lambda x: x["part"])]) or "hali yo'q"
+    existing_parts = " | ".join([
+        p.get("label", f"{p['part']}-qism")
+        for p in sorted(parts, key=lambda x: x["part"])
+    ]) or "hali yo'q"
 
-    # State saqlash
     addpart_state[msg.from_user.id] = {"code": code, "part": part_num}
 
     await msg.reply(
@@ -731,80 +852,80 @@ async def list_parts_command(client, msg):
     text += f"\n➕ Keyingi qism: <code>/addpart {code}</code>"
 
     await msg.reply(text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"➕ {next_part}-qism qo'shish", callback_data=f"ap_start_{code}_auto")]
+        [InlineKeyboardButton(f"➕ {next_part}-qism qo'shish", callback_data=f"ap_start_{code}")]
     ]))
 
 
 # ==========================================
-#   📦 KANALDAN QISM QO'SHISH (SAVED_MOVIE)
+#   📦 PRIVATE: VIDEO HANDLER (addpart_state)
+# ==========================================
+
+@app.on_message(filters.video & filters.private, group=-1)
+async def handle_private_addpart_video(client, msg):
+    """
+    Private chatda admin video yuboraganda addpart_state mavjud bo'lsa → qismni saqlaydi
+    """
+    if not msg.from_user:
+        return
+
+    uid = msg.from_user.id
+
+    if uid not in addpart_state:
+        return
+
+    if not is_admin(uid):
+        addpart_state.pop(uid, None)
+        return
+
+    state = addpart_state[uid]
+    code = state["code"]
+    part_num = state["part"]
+    label = f"{part_num}-qism"
+
+    movies_col.update_one(
+        {"code": code},
+        {
+            "$push": {
+                "parts": {
+                    "part": part_num,
+                    "file_id": msg.video.file_id,
+                    "label": label,
+                    "added_at": datetime.now(UZ_TZ)
+                }
+            }
+        }
+    )
+
+    updated = movies_col.find_one({"code": code})
+    parts = sorted(updated.get("parts", []), key=lambda x: x["part"])
+    total_parts = len(parts)
+    title_line = updated.get("title", "Kino").split('\n')[0]
+    parts_text = " | ".join([p["label"] for p in parts])
+    next_part = max([p["part"] for p in parts]) + 1
+
+    # State yangilash: keyingi qism uchun
+    addpart_state[uid] = {"code": code, "part": next_part}
+
+    await msg.reply(
+        f"✅ <b>{label} saqlandi!</b>\n\n"
+        f"🎬 Kino: <b>{title_line}</b>\n"
+        f"🔑 Kod: <code>{code}</code>\n"
+        f"📦 Qismlar ({total_parts} ta): {parts_text}\n\n"
+        f"⬇️ <b>{next_part}-qismni yuboring</b> yoki tugating.",
+        reply_markup=addpart_cancel_menu()
+    )
+
+
+# ==========================================
+#         KANALGA KINO SAQLASH (faqat yangi kino)
 # ==========================================
 
 @app.on_message(filters.video & filters.chat(SAVED_MOVIE))
 async def save_movie_from_channel(client, msg):
     """
-    Kanal ichida:
-    - channel_addpart_wait mavjud → reply bo'lmasa ham avtomatik keyingi qism
-    - Reply + channel_addpart_wait → qism saqlash (eski usul ham ishlaydi)
-    - Oddiy video (wait yo'q) → yangi kino saqlash
+    SAVED_MOVIE kanaliga video tashlansa — faqat yangi kino sifatida saqlanadi.
+    Qism qo'shish endi faqat botning o'zidan (private chat orqali) amalga oshiriladi.
     """
-
-    # ─── Qism kutilayotgan holat bor — reply SHART EMAS ───
-    if channel_addpart_wait:
-        # Agar reply qilingan bo'lsa, aniq shu message_id ga mos kelganni ol
-        target_state = None
-        target_key = None
-
-        if msg.reply_to_message:
-            reply_id = msg.reply_to_message.id
-            if reply_id in channel_addpart_wait:
-                target_state = channel_addpart_wait.pop(reply_id)
-                target_key = reply_id
-
-        # Reply yo'q yoki mos kelmadi → birinchi kutayotgan qismni ol
-        if target_state is None:
-            target_key, target_state = next(iter(channel_addpart_wait.items()))
-            channel_addpart_wait.pop(target_key)
-
-        code = target_state["code"]
-        part_num = target_state["part"]
-        label = f"{part_num}-qism"
-
-        movies_col.update_one(
-            {"code": code},
-            {
-                "$push": {
-                    "parts": {
-                        "part": part_num,
-                        "file_id": msg.video.file_id,
-                        "label": label,
-                        "added_at": datetime.now(UZ_TZ)
-                    }
-                }
-            }
-        )
-
-        updated = movies_col.find_one({"code": code})
-        parts = sorted(updated.get("parts", []), key=lambda x: x["part"])
-        title_line = updated.get("title", "Kino").split('\n')[0]
-        parts_text = " | ".join([p["label"] for p in parts])
-        next_part = max([p["part"] for p in parts]) + 1
-
-        await msg.reply(
-            f"✅ <b>{label} saqlandi!</b>\n\n"
-            f"🎬 Kino: <b>{title_line}</b>\n"
-            f"🔑 Kod: <code>{code}</code>\n"
-            f"📦 Qismlar: {parts_text}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    f"➕ {next_part}-qism qo'shish",
-                    callback_data=f"ap_start_{code}_auto"
-                )],
-                [InlineKeyboardButton("✅ Tayyor, tugatish", callback_data=f"ap_done_{code}")]
-            ])
-        )
-        return
-
-    # ─── Oddiy yangi kino saqlash (wait yo'q) ───
     caption = msg.caption or ""
     found_genres = [
         word.strip("#").lower()
@@ -851,207 +972,10 @@ async def save_movie_from_channel(client, msg):
                 InlineKeyboardButton("⭐ 5", callback_data=f"star_5_{new_code}")
             ],
             [
-                InlineKeyboardButton("➕ Qism qo'shish", callback_data=f"ap_start_{new_code}_auto"),
+                InlineKeyboardButton("➕ Qism qo'shish", callback_data=f"ap_start_{new_code}"),
                 InlineKeyboardButton("🗑 O'chirish", callback_data=f"rm_{new_code}")
             ]
         ])
-    )
-
-# ==========================================
-#   📦 QISM QO'SHISH: CALLBACK HANDLERLARI
-# ==========================================
-
-@app.on_callback_query(filters.regex(r"^ap_start_(\d+)_(.+)$"))
-async def ap_start_cb(client, cb):
-    """
-    'Qism qo'shish' tugmasi: kanal yoki private orqali ishga tushadi.
-    ap_start_{code}_auto  → keyingi qism raqamini avtomatik aniqlaydi
-    ap_start_{code}_3     → aynan 3-qismni qo'shadi
-    """
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
-
-    parts_data = cb.data.split("_")
-    # ap_start_{code}_{part_or_auto}
-    movie_code = int(parts_data[2])
-    part_hint = parts_data[3]  # "auto" yoki raqam
-
-    movie = movies_col.find_one({"code": movie_code})
-    if not movie:
-        return await cb.answer("❌ Kino topilmadi!", show_alert=True)
-
-    parts = movie.get("parts", [])
-    title_line = movie.get("title", "Kino").split('\n')[0]
-
-    if part_hint == "auto":
-        existing_nums = sorted([p["part"] for p in parts])
-        part_num = (max(existing_nums) + 1) if existing_nums else 1
-    else:
-        part_num = int(part_hint) if part_hint.isdigit() else len(parts) + 1
-
-    existing_str = " | ".join([p.get("label", f"{p['part']}-qism") for p in sorted(parts, key=lambda x: x["part"])]) or "hali yo'q"
-
-    # ─── Xabar yuborib, uning ID sini saqlaymiz (kanal uchun) ───
-    sent = await cb.message.reply(
-        f"⏳ <b>{title_line}</b>\n\n"
-        f"📦 Mavjud qismlar: {existing_str}\n\n"
-        f"👇 <b>Endi {part_num}-qism videosini SHU XABARGA REPLY qilib yuboring:</b>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Bekor qilish", callback_data=f"ap_cancel_{movie_code}_0")]
-        ])
-    )
-
-    # Kanal uchun: message_id bo'yicha kutamiz
-    channel_addpart_wait[sent.id] = {"code": movie_code, "part": part_num}
-
-    # Tugmani to'g'ri ID bilan yangilash
-    await sent.edit_reply_markup(
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Bekor qilish", callback_data=f"ap_cancel_{movie_code}_{sent.id}")]
-        ])
-    )
-
-    await cb.answer(f"✅ {part_num}-qism videosini reply qilib yuboring!", show_alert=True)
-
-
-@app.on_callback_query(filters.regex(r"^ap_cancel_(\d+)_(\d+)$"))
-async def ap_cancel_cb(client, cb):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
-    msg_id = int(cb.data.split("_")[3])
-    if msg_id in channel_addpart_wait:
-        channel_addpart_wait.pop(msg_id)
-    await cb.message.edit_text("❌ Qism qo'shish bekor qilindi.")
-    await cb.answer()
-
-
-@app.on_callback_query(filters.regex(r"^ap_done_(\d+)$"))
-async def ap_done_cb(client, cb):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("🚫 Faqat adminlar uchun!", show_alert=True)
-    code = int(cb.data.split("_")[2])
-    movie = movies_col.find_one({"code": code})
-    parts = sorted(movie.get("parts", []), key=lambda x: x["part"])
-    title_line = movie.get("title", "Kino").split('\n')[0]
-    parts_text = " | ".join([p["label"] for p in parts]) if parts else "qism yo'q"
-
-    await cb.message.edit_text(
-        f"✅ <b>Kino to'liq saqlandi!</b>\n\n"
-        f"🎬 <b>{title_line}</b>\n"
-        f"🔑 Kod: <code>{code}</code>\n"
-        f"📦 Jami {len(parts)} ta qism: {parts_text}\n\n"
-        f"<i>User {code} kodini yuborganda qism tanlash tugmalari chiqadi.</i>"
-    )
-    await cb.answer("✅ Tayyor!")
-
-
-# ==========================================
-#   🆕 MAVJUD KINOGA QISM QO'SHISH BUYRUQI
-# ==========================================
-
-@app.on_message(filters.command("addtomovie") & filters.private)
-async def addtomovie_command(client, msg):
-    """
-    /addtomovie 50   → 50-kodli mavjud kinoga yangi qism qo'shish
-    Masalan: 67-kodda turib 50-kodli kinoga qism qo'shish mumkin
-    """
-    if not is_admin(msg.from_user.id):
-        return await msg.reply("🚫 Bu buyruq faqat adminlar uchun!")
-
-    args = msg.command[1:]
-    if not args or not args[0].isdigit():
-        return await msg.reply(
-            "❌ Format: <code>/addtomovie 50</code>\n\n"
-            "<i>50 — qism qo'shmoqchi bo'lgan kino kodi</i>"
-        )
-
-    code = int(args[0])
-    movie = movies_col.find_one({"code": code})
-    if not movie:
-        return await msg.reply(f"❌ <b>{code}</b> kodli kino bazada topilmadi!")
-
-    parts = movie.get("parts", [])
-    existing_nums = sorted([p["part"] for p in parts])
-    next_part = (max(existing_nums) + 1) if existing_nums else 1
-    title_line = movie.get("title", "Kino").split('\n')[0]
-    existing_str = " | ".join([p.get("label", f"{p['part']}-qism") for p in sorted(parts, key=lambda x: x["part"])]) or "hali yo'q"
-
-    # State saqlash
-    addpart_state[msg.from_user.id] = {"code": code, "part": next_part}
-
-    await msg.reply(
-        f"🎬 <b>{title_line}</b>\n"
-        f"🔑 Kod: <code>{code}</code>\n"
-        f"📦 Mavjud qismlar: {existing_str}\n\n"
-        f"⬇️ Endi <b>{next_part}-qism</b> videosini yuboring.\n\n"
-        f"<i>Keyingi qismlarni ham ketma-ket yuboring.\n"
-        f"Tugatgach \"✅ Qismlar tayyor, tugat\" tugmasini bosing.</i>",
-        reply_markup=addpart_cancel_menu()
-    )
-
-
-# ==========================================
-#   📦 PRIVATE: VIDEO HANDLER (addpart_state)
-#   Bu handler handle_text DAN OLDIN ishlaydi (group=-1)
-# ==========================================
-
-@app.on_message(filters.video & filters.private, group=-1)
-async def handle_private_addpart_video(client, msg):
-    """
-    Private chatda admin video yuboraganda:
-    - addpart_state mavjud bo'lsa → qismni saqlaydi
-    - Aks holda → keyingi handlerlarga o'tadi (pass etmaydi, stop qiladi)
-    """
-    if not msg.from_user:
-        return
-
-    uid = msg.from_user.id
-
-    if uid not in addpart_state:
-        # Bu handler ishlamaydi, keyingiga o'tsin
-        return
-
-    if not is_admin(uid):
-        addpart_state.pop(uid, None)
-        return
-
-    state = addpart_state[uid]
-    code = state["code"]
-    part_num = state["part"]
-    label = f"{part_num}-qism"
-
-    # Qismni bazaga qo'shish
-    movies_col.update_one(
-        {"code": code},
-        {
-            "$push": {
-                "parts": {
-                    "part": part_num,
-                    "file_id": msg.video.file_id,
-                    "label": label,
-                    "added_at": datetime.now(UZ_TZ)
-                }
-            }
-        }
-    )
-
-    updated = movies_col.find_one({"code": code})
-    parts = sorted(updated.get("parts", []), key=lambda x: x["part"])
-    total_parts = len(parts)
-    title_line = updated.get("title", "Kino").split('\n')[0]
-    parts_text = " | ".join([p["label"] for p in parts])
-    next_part = max([p["part"] for p in parts]) + 1
-
-    # State yangilash: keyingi qism uchun tayyor
-    addpart_state[uid] = {"code": code, "part": next_part}
-
-    await msg.reply(
-        f"✅ <b>{label} saqlandi!</b>\n\n"
-        f"🎬 Kino: <b>{title_line}</b>\n"
-        f"🔑 Kod: <code>{code}</code>\n"
-        f"📦 Qismlar ({total_parts} ta): {parts_text}\n\n"
-        f"⬇️ <b>{next_part}-qismni yuboring</b> yoki tugating.",
-        reply_markup=addpart_cancel_menu()
     )
 
 
@@ -1062,7 +986,8 @@ async def handle_private_addpart_video(client, msg):
 @app.on_message(filters.chat(SAVED_MOVIE) & filters.reply & filters.text)
 async def update_trailer_link(client, msg):
     reply = msg.reply_to_message
-    is_self = (reply.from_user and reply.from_user.is_self) or (reply.sender_chat and reply.sender_chat.id == (await client.get_me()).id)
+    is_self = (reply.from_user and reply.from_user.is_self) or \
+              (reply.sender_chat and reply.sender_chat.id == (await client.get_me()).id)
     if is_self and "FILM KODI:" in (reply.text or ""):
         if "instagram.com" in msg.text:
             try:
@@ -1531,7 +1456,7 @@ async def handle_text(client, msg):
     uid = msg.from_user.id
     txt = msg.text
 
-    # ─── addpart_state: matn kelganda (bekor qilish yoki tugat) ───
+    # ─── addpart_state: matn kelganda ───
     if uid in addpart_state:
         if txt == "❌ Bekor qilish":
             state = addpart_state.pop(uid)
@@ -1555,7 +1480,6 @@ async def handle_text(client, msg):
                 f"<i>Userlar {code} kodini yuborganda qism tanlash tugmalari chiqadi.</i>",
                 reply_markup=admin_menu()
             )
-        # Boshqa matn kelsa — kutib turadi
         return await msg.reply(
             "⏳ Hozir qism video kutilmoqda.\n"
             "Video yuboring yoki tugmalardan birini bosing.",
