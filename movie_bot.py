@@ -743,56 +743,74 @@ async def list_parts_command(client, msg):
 async def save_movie_from_channel(client, msg):
     """
     Kanal ichida:
-    - Reply + channel_addpart_wait → qism saqlash
-    - Oddiy video → yangi kino saqlash
+    - channel_addpart_wait mavjud → reply bo'lmasa ham avtomatik keyingi qism
+    - Reply + channel_addpart_wait → qism saqlash (eski usul ham ishlaydi)
+    - Oddiy video (wait yo'q) → yangi kino saqlash
     """
-    # ─── Qism videosi: reply orqali kelganmi tekshir ───
-    if msg.reply_to_message:
-        reply_id = msg.reply_to_message.id
-        if reply_id in channel_addpart_wait:
-            state = channel_addpart_wait.pop(reply_id)
-            code = state["code"]
-            part_num = state["part"]
-            label = f"{part_num}-qism"
 
-            movies_col.update_one(
-                {"code": code},
-                {
-                    "$push": {
-                        "parts": {
-                            "part": part_num,
-                            "file_id": msg.video.file_id,
-                            "label": label,
-                            "added_at": datetime.now(UZ_TZ)
-                        }
+    # ─── Qism kutilayotgan holat bor — reply SHART EMAS ───
+    if channel_addpart_wait:
+        # Agar reply qilingan bo'lsa, aniq shu message_id ga mos kelganni ol
+        target_state = None
+        target_key = None
+
+        if msg.reply_to_message:
+            reply_id = msg.reply_to_message.id
+            if reply_id in channel_addpart_wait:
+                target_state = channel_addpart_wait.pop(reply_id)
+                target_key = reply_id
+
+        # Reply yo'q yoki mos kelmadi → birinchi kutayotgan qismni ol
+        if target_state is None:
+            target_key, target_state = next(iter(channel_addpart_wait.items()))
+            channel_addpart_wait.pop(target_key)
+
+        code = target_state["code"]
+        part_num = target_state["part"]
+        label = f"{part_num}-qism"
+
+        movies_col.update_one(
+            {"code": code},
+            {
+                "$push": {
+                    "parts": {
+                        "part": part_num,
+                        "file_id": msg.video.file_id,
+                        "label": label,
+                        "added_at": datetime.now(UZ_TZ)
                     }
                 }
-            )
+            }
+        )
 
-            updated = movies_col.find_one({"code": code})
-            parts = sorted(updated.get("parts", []), key=lambda x: x["part"])
-            title_line = updated.get("title", "Kino").split('\n')[0]
-            parts_text = " | ".join([p["label"] for p in parts])
-            next_part = max([p["part"] for p in parts]) + 1
+        updated = movies_col.find_one({"code": code})
+        parts = sorted(updated.get("parts", []), key=lambda x: x["part"])
+        title_line = updated.get("title", "Kino").split('\n')[0]
+        parts_text = " | ".join([p["label"] for p in parts])
+        next_part = max([p["part"] for p in parts]) + 1
 
-            await msg.reply(
-                f"✅ <b>{label} saqlandi!</b>\n\n"
-                f"🎬 Kino: <b>{title_line}</b>\n"
-                f"🔑 Kod: <code>{code}</code>\n"
-                f"📦 Qismlar: {parts_text}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        f"➕ {next_part}-qism qo'shish",
-                        callback_data=f"ap_start_{code}_auto"
-                    )],
-                    [InlineKeyboardButton("✅ Tayyor, tugatish", callback_data=f"ap_done_{code}")]
-                ])
-            )
-            return
+        await msg.reply(
+            f"✅ <b>{label} saqlandi!</b>\n\n"
+            f"🎬 Kino: <b>{title_line}</b>\n"
+            f"🔑 Kod: <code>{code}</code>\n"
+            f"📦 Qismlar: {parts_text}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"➕ {next_part}-qism qo'shish",
+                    callback_data=f"ap_start_{code}_auto"
+                )],
+                [InlineKeyboardButton("✅ Tayyor, tugatish", callback_data=f"ap_done_{code}")]
+            ])
+        )
+        return
 
-    # ─── Oddiy yangi kino saqlash ───
+    # ─── Oddiy yangi kino saqlash (wait yo'q) ───
     caption = msg.caption or ""
-    found_genres = [word.strip("#").lower() for word in caption.split() if word.startswith("#") and word.strip("#").lower() in ALLOWED_GENRES]
+    found_genres = [
+        word.strip("#").lower()
+        for word in caption.split()
+        if word.startswith("#") and word.strip("#").lower() in ALLOWED_GENRES
+    ]
     if not found_genres:
         found_genres = ["boshqa"]
 
@@ -838,7 +856,6 @@ async def save_movie_from_channel(client, msg):
             ]
         ])
     )
-
 
 # ==========================================
 #   📦 QISM QO'SHISH: CALLBACK HANDLERLARI
