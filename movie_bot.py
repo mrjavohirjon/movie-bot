@@ -214,63 +214,139 @@ def addpart_cancel_menu():
 #                HELPERS
 # ==========================================
 
-async def check_force_join(client, msg):
-    uid = msg.from_user.id
-    if is_admin(uid):
+import os
+from pyrogram import Client
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+from pyrogram.enums import ChatMemberStatus
+
+# Eslatma: is_admin va users_col bu yerda aniqlangan bo'lishi kerak
+# from database import users_col, is_admin
+
+async def check_force_join(client: Client, msg: Message | CallbackQuery):
+    """
+    Foydalanuvchining majburiy obunalarini tekshirish funksiyasi.
+    """
+    user = msg.from_user
+    uid = user.id
+
+    # 1. Adminlar va VIP foydalanuvchilarni tekshirishdan o'tkazib yuboramiz
+    if hasattr(msg, "is_admin_check") and is_admin(uid): # Agar is_admin funksiyangiz bo'lsa
         return True
 
+    # VIP tekshiruvi (users_col bazasi orqali)
     user_db_data = users_col.find_one({"user_id": uid})
     if user_db_data and user_db_data.get("is_vip", False):
         return True
 
-    conf = get_config()
-    channels = conf.get("mandatory_channels", [])
+    # 2. Kanal faylini o'qish
+    kanal_file = "stat/kanal.txt"
+    if not os.path.exists(kanal_file):
+        return True
 
-    if not channels:
+    try:
+        with open(kanal_file, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except Exception as e:
+        print(f"Fayl o'qishda xato: {e}")
+        return True
+
+    if not lines or lines[0] == "0":
         return True
 
     unsubscribed = []
+    buttons = []
 
-    for chan in channels:
-        try:
-            chat_id = chan["id"]
-            if isinstance(chat_id, str) and chat_id.startswith("-100"):
-                chat_id = int(chat_id)
+    for line in lines:
+        is_member = False
+        name = "Kanal"
+        url = "#"
 
-            member = await client.get_chat_member(chat_id, uid)
-            if member.status in [
-                ChatMemberStatus.MEMBER,
-                ChatMemberStatus.ADMINISTRATOR,
-                ChatMemberStatus.OWNER
-            ]:
-                continue
-            else:
-                unsubscribed.append(chan)
-        except Exception as e:
-            print(f"FORCE JOIN TEKSHIRISHDA XATO: {chan.get('id')} — {e}")
-            unsubscribed.append(chan)
+        # --- Ochiq kanal: @username formatida ---
+        if "@" in line:
+            username = line.split("@")[-1].strip()
+            url = f"https://t.me/{username}"
+            
+            try:
+                member = await client.get_chat_member(username, uid)
+                is_member = member.status in [
+                    ChatMemberStatus.MEMBER,
+                    ChatMemberStatus.ADMINISTRATOR,
+                    ChatMemberStatus.OWNER,
+                ]
+                chat = await client.get_chat(username)
+                name = chat.title or username
+            except Exception:
+                is_member = False
+                name = f"@{username}"
 
-    if unsubscribed:
-        buttons = []
-        for index, ch in enumerate(unsubscribed, start=1):
-            link = ch.get('link')
-            buttons.append([InlineKeyboardButton(text=f"➕ {index}-kanal", url=link)])
+        # --- Yopiq kanal: chat_id++invite_link formatida ---
+        elif "++" in line:
+            parts = line.split("++")
+            chat_id_str = parts[0].strip()
+            url = parts[1].strip() if len(parts) > 1 else "#"
 
-        start_param = msg.command[1] if hasattr(msg, "command") and msg.command and len(msg.command) > 1 else "start"
-        me = await client.get_me()
-        join_url = f"https://t.me/{me.username}?start={start_param}"
-        buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", url=join_url)])
+            # Stat fayl orqali tekshirish (bot barcha kanalda admin bo'lmasligi mumkin)
+            stat_file = f"stat/{chat_id_str}.txt"
+            if os.path.exists(stat_file):
+                with open(stat_file, "r") as f:
+                    is_member = str(uid) in f.read()
+            
+            # Agar faylda topilmasa, API orqali tekshirib ko'rish (ixtiyoriy)
+            if not is_member:
+                try:
+                    member = await client.get_chat_member(int(chat_id_str), uid)
+                    is_member = member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+                except:
+                    pass
 
-        text = "<b>👋 Assalomu alaykum!</b>\n\nBotdan foydalanish uchun homiy kanallarga a'zo bo'ling:"
+            try:
+                chat = await client.get_chat(chat_id_str)
+                name = chat.title
+            except:
+                name = "Xususiy kanal"
 
-        if hasattr(msg, "data"):
-            await msg.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        # Tugmalarni yig'ish
+        if not is_member:
+            unsubscribed.append(line)
+            buttons.append([InlineKeyboardButton(text=f"❌ {name}", url=url)])
         else:
-            await msg.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
-        return False
+            # Obuna bo'lgan bo'lsa ham ro'yxatda ko'rsatish (ixtiyoriy: ✅ belgisi bilan)
+            buttons.append([InlineKeyboardButton(text=f"✅ {name}", url=url)])
 
-    return True
+    # 3. Agar barchaga a'zo bo'lsa True qaytaradi
+    if not unsubscribed:
+        return True
 
+    # 4. Obuna bo'lmagan bo'lsa xabar yuborish
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Tekshirish", callback_data="obuna")
+    ])
+
+    text = (
+        "👋 <b>Botdan to'liq foydalanish uchun quyidagi kanallarimizga obuna bo'ling!</b>\n\n"
+        "<i>Obuna bo'lib, 'Tekshirish' tugmasini bosing.</i>"
+    )
+
+    # CallbackQuery yoki Message ekanligiga qarab javob qaytarish
+    if isinstance(msg, CallbackQuery):
+        await msg.answer("Iltimos, barcha kanallarga a'zo bo'ling!", show_alert=True)
+        # Faqat matn o'zgargan bo'lsa edit qilish
+        try:
+            await msg.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                disable_web_page_preview=True,
+            )
+        except:
+            pass
+    else:
+        await msg.reply(
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True,
+        )
+
+    return False
 
 def get_movie_list(page=1, genre=None):
     items_per_page = 10
